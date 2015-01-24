@@ -1,0 +1,77 @@
+$Id: RELEASE-NOTES.txt 385293 2006-03-12 15:11:19Z scolebourne $
+
+			 Commons IO Package
+			    Version 1.2
+			   Release Notes
+
+
+INTRODUCTION:
+
+Commons IO is a package of Java utility classes for java.io's hierarchy.  
+Classes in this package are considered to be so standard and of such high 
+reuse as to justify existence in java.io.
+
+Commons IO contains utility classes, stream implementations, file filters, 
+and endian transformation classes.
+
+
+Compatibility with 1.1
+----------------------
+Binary compatible - Yes
+
+Source compatible - Yes
+
+Semantic compatible - Yes
+
+
+Deprecations from 1.1
+---------------------
+
+
+Bug fixes from 1.1
+------------------
+- FileSystemUtils.freeSpace(drive)
+  Fix to allow Windows based command to function in French locale
+
+- FileUtils.read*
+  Increase certainty that files are closed in case of error
+
+- LockableFileWriter
+  Locking mechanism was broken and only provided limited protection [38942]
+  File deletion and locking in case of constructor error was broken
+
+
+Enhancements from 1.1
+---------------------
+- AgeFileFilter/SizeFileFilter
+  New file filters that compares against the age and size of the file
+
+- FileSystemUtils.freeSpaceKb(drive)
+  New method that unifies result to be in kilobytes [38574]
+
+- FileUtils.contentEquals(File,File)
+  Performance improved by adding length and file location checking
+
+- FileUtils.iterateFiles
+  Two new method to provide direct access to iterators over files
+
+- FileUtils.lineIterator
+  IOUtils.lineIterator
+  New methods to provide an iterator over the lines in a file [38083]
+
+- FileUtils.copyDirectoryToDirectory
+  New method to copy a directory to within another directory [36315]
+
+
+Feedback
+--------
+Open source works best when you give feedback:
+http://jakarta.apache.org/commons/io/
+
+Please direct all bug reports to Bugzilla (prefix bug reports by [io])
+http://issues.apache.org/bugzilla/buglist.cgi?product=Commons&component=IO
+
+Or subscribe to the commons-user mailing list (prefix emails by [io])
+http://jakarta.apache.org/site/mail.html
+
+The Commons-IO Team

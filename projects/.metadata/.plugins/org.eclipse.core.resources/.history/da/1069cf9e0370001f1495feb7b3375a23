@@ -1,0 +1,823 @@
+package hdr;
+
+import java.util.Vector;
+
+public class SURFKeyPointSearch 
+{
+	static final int NUM_DESCRIPTORS = 64;
+	static final int [][]filter_map = {{0,1,2,3}, {1,3,4,5}, {3,5,6,7}, {5,7,8,9}, {7,9,10,11}};
+	static final double [][]gauss25  = {
+			  {0.02350693969273,0.01849121369071,0.01239503121241,0.00708015417522,0.00344628101733,0.00142945847484,0.00050524879060},
+			  {0.02169964028389,0.01706954162243,0.01144205592615,0.00653580605408,0.00318131834134,0.00131955648461,0.00046640341759},
+			  {0.01706954162243,0.01342737701584,0.00900063997939,0.00514124713667,0.00250251364222,0.00103799989504,0.00036688592278},
+			  {0.01144205592615,0.00900063997939,0.00603330940534,0.00344628101733,0.00167748505986,0.00069579213743,0.00024593098864},
+			  {0.00653580605408,0.00514124713667,0.00344628101733,0.00196854695367,0.00095819467066,0.00039744277546,0.00014047800980},
+			  {0.00318131834134,0.00250251364222,0.00167748505986,0.00095819467066,0.00046640341759,0.00019345616757,0.00006837798818},
+			  {0.00131955648461,0.00103799989504,0.00069579213743,0.00039744277546,0.00019345616757,0.00008024231247,0.00002836202103}
+			};
+
+	static final double [][]gauss33 = {
+			  {0.014614763,0.013958917,0.012162744,0.00966788,0.00701053,0.004637568,0.002798657,0.001540738,0.000773799,0.000354525,0.000148179},
+			  {0.013958917,0.013332502,0.011616933,0.009234028,0.006695928,0.004429455,0.002673066,0.001471597,0.000739074,0.000338616,0.000141529},
+			  {0.012162744,0.011616933,0.010122116,0.008045833,0.005834325,0.003859491,0.002329107,0.001282238,0.000643973,0.000295044,0.000123318},
+			  {0.00966788,0.009234028,0.008045833,0.006395444,0.004637568,0.003067819,0.001851353,0.001019221,0.000511879,0.000234524,9.80224E-05},
+			  {0.00701053,0.006695928,0.005834325,0.004637568,0.003362869,0.002224587,0.001342483,0.000739074,0.000371182,0.000170062,7.10796E-05},
+			  {0.004637568,0.004429455,0.003859491,0.003067819,0.002224587,0.001471597,0.000888072,0.000488908,0.000245542,0.000112498,4.70202E-05},
+			  {0.002798657,0.002673066,0.002329107,0.001851353,0.001342483,0.000888072,0.000535929,0.000295044,0.000148179,6.78899E-05,2.83755E-05},
+			  {0.001540738,0.001471597,0.001282238,0.001019221,0.000739074,0.000488908,0.000295044,0.00016243,8.15765E-05,3.73753E-05,1.56215E-05},
+			  {0.000773799,0.000739074,0.000643973,0.000511879,0.000371182,0.000245542,0.000148179,8.15765E-05,4.09698E-05,1.87708E-05,7.84553E-06},
+			  {0.000354525,0.000338616,0.000295044,0.000234524,0.000170062,0.000112498,6.78899E-05,3.73753E-05,1.87708E-05,8.60008E-06,3.59452E-06},
+			  {0.000148179,0.000141529,0.000123318,9.80224E-05,7.10796E-05,4.70202E-05,2.83755E-05,1.56215E-05,7.84553E-06,3.59452E-06,1.50238E-06}
+			};	
+	public int [][]ptsHisto;
+	private long [][] integralImg;
+	private int width;
+	private int height;
+	private int octaves;
+	private int interval;
+	private int initSample;
+	private float threshold;
+	private Vector responseLayerStack;
+	private Vector pointsVector;
+	public int NUM_TRIES = 1000;
+
+    SURFKeyPointSearch( long[][] integralImg, int octive, int interval, 
+            int initSample, float threshold)
+    {
+        this.width  = integralImg[0].length;
+        this.height = integralImg.length;
+        this.octaves = octive;
+        this.interval   = interval;
+        this.initSample = initSample;
+        this.threshold  = threshold;
+        this.integralImg = integralImg;
+        responseLayerStack = new Vector();
+        pointsVector = new Vector();        
+    }
+    
+	SURFKeyPointSearch( byte[] data, int width, int height, int octive, int interval, 
+			int initSample, float threshold)
+	{
+		int sum;
+		this.width  = width;
+		this.height = height;
+		this.octaves = octive;
+		this.interval   = interval;
+		this.initSample = initSample;
+		this.threshold  = threshold;
+		integralImg = new long[height][width];
+		int index = 0;
+		for ( int y = 0; y < height; y++)
+		{
+		    sum = 0;
+			for ( int x = 0; x < width; x++)
+			{
+			    int d = data[index++];
+			    if (d < 0) d+= 256;
+				sum+= d;
+				integralImg[y][x] = sum;
+			}
+		}
+		// sum vertically
+		for ( int y = 1; y < height; y++ )
+		{
+			for ( int x = 0; x < width; x++)
+			{
+				integralImg[y][x] += integralImg[y-1][x];
+			}
+		}
+        responseLayerStack = new Vector();
+        pointsVector = new Vector();
+	}
+	
+	public int [][] getKeyPointHistoMap()
+	{
+	    if (ptsHisto == null)
+	    {
+	        getIpoints();
+	    }
+	    return ptsHisto;
+	}
+	
+	//! Find the image features and write into vector of features
+	public IPoint[] getIpoints()
+	{
+	    ptsHisto = new int[5][5];  
+	    long t1 =System.currentTimeMillis();  
+	    // Build the response map
+	    createResponseStack();
+	    // Get the response layers
+	    ResponseLayer b, m, t;
+        for (int o = 0; o < octaves; ++o) for (int i = 0; i <= 1; ++i)
+        {
+          b = (ResponseLayer)responseLayerStack.get(filter_map[o][i]);
+          m = (ResponseLayer)responseLayerStack.get(filter_map[o][i+1]);
+          t = (ResponseLayer)responseLayerStack.get(filter_map[o][i+2]);
+  
+          // loop over middle response layer at density of the most 
+          // sparse layer (always top), to find maxima across scale and space
+          for (int r = 0; r < t.getHeight(); ++r)
+          {
+            for (int c = 0; c < t.getWidth(); ++c)
+            {
+              if (isExtremum(r, c, t, m, b))
+              {
+                  interpolateExtremum(r, c, t, m, b);
+              }
+            }
+          }
+        }
+        if (!pointsVector.isEmpty())
+        {
+            IPoint []pts = new IPoint[pointsVector.size()];
+            float xGridSize = width/5;
+            float yGridSize = height/5;
+            for ( int i = 0; i < pointsVector.size(); i++)
+            {
+                pts[i] = (IPoint)pointsVector.get( i );
+                int xGrid = (int)(pts[i].x /xGridSize);
+                int yGrid = (int)(pts[i].y /yGridSize);
+                ptsHisto[yGrid][xGrid]++;
+            }
+            long t2 =System.currentTimeMillis();
+            System.out.println("time = " + (t2-t1));
+            return pts;
+        }
+        else
+            return null;
+	}
+
+
+	//! Find the image features and write into vector of features
+	public IPoint[] getIpointsQuickly()
+	{
+	    ptsHisto = new int[5][5];  
+	    long t1 =System.currentTimeMillis();  
+	    // Build the response map
+	    createResponseStackForQuickSearch();
+	    // Get the response layers
+	    ResponseLayer b, m, t;
+        b = (ResponseLayer)responseLayerStack.get(filter_map[0][0]);
+        m = (ResponseLayer)responseLayerStack.get(filter_map[0][1]);
+        t = (ResponseLayer)responseLayerStack.get(filter_map[0][2]);
+  
+        // loop over middle response layer at density of the most 
+        // sparse layer (always top), to find maxima across scale and space
+        for (int r = 0; r < t.getHeight(); ++r)
+        {
+            for (int c = 0; c < t.getWidth(); ++c)
+            {
+              if (isExtremum(r, c, t, m, b))
+              {
+        		   float xx = (float)(c * t.getSteps());
+        		   float yy = (float)(r * t.getSteps());
+    	           IPoint ipt = new IPoint(xx,yy,1.0f,false);
+    	           pointsVector.add(ipt);
+              }
+            }
+        }
+        
+        if (!pointsVector.isEmpty())
+        {
+            IPoint []pts = new IPoint[pointsVector.size()];
+            float xGridSize = width/5;
+            float yGridSize = height/5;
+            for ( int i = 0; i < pointsVector.size(); i++)
+            {
+                pts[i] = (IPoint)pointsVector.get( i );
+                int xGrid = (int)(pts[i].x /xGridSize);
+                int yGrid = (int)(pts[i].y /yGridSize);
+                ptsHisto[yGrid][xGrid]++;
+            }
+            long t2 =System.currentTimeMillis();
+            System.out.println( "time = " + (t2-t1));
+            System.out.println( "Num key pts = " +  pointsVector.size());
+            return pts;
+        }
+        else
+            return null;
+	}
+
+	private boolean isExtremum(int r, int c, ResponseLayer t, ResponseLayer m, ResponseLayer b)
+	{
+	    // bounds check
+	    int layerBorder = (t.getFilterSize() + 1) / (2 * t.getSteps());
+	    if (r <= layerBorder || r >= t.getHeight() - layerBorder || c <= layerBorder || c >= t.getWidth() - layerBorder)
+	       return false;
+
+	    float candidate = 0;
+	    // check the candidate point in the middle layer is above thresh 
+	    int scale = m.getWidth()/t.getWidth();
+	    int scale2= b.getWidth()/t.getWidth();
+	    candidate = m.getResponse(r*scale, c*scale );
+	    if (candidate < threshold) 
+		    return false; 
+		for (int rr = -1; rr <=1; ++rr)
+		{
+		    for (int cc = -1; cc <=1; ++cc)
+		    {
+		      // if any response in 3x3x3 is greater candidate not maximum
+		      if (
+		        t.getResponse(r+rr, c+cc) >= candidate ||
+		        ((rr != 0 && cc != 0) && m.getResponse((r+rr)*scale, (c+cc)*scale ) >= candidate) ||
+		        b.getResponse((r+rr)*scale2, (c+cc)*scale2) >= candidate
+		        ) 
+		      return false;
+		    }
+	    }
+		return true;
+	}
+
+
+	protected void createResponseStack()
+	{
+		int w = (width / initSample);
+		int h = (height / initSample);
+		int s = initSample;
+
+		// Calculate approximated determinant of hessian values
+		if (octaves >= 1)
+	    {
+			responseLayerStack.add(new ResponseLayer(w, h, s, 9));
+			responseLayerStack.add(new ResponseLayer(w, h, s, 15));
+			responseLayerStack.add(new ResponseLayer(w, h, s, 21));
+			responseLayerStack.add(new ResponseLayer(w, h, s, 27));
+		}
+		 
+		if (octaves >= 2)
+	    {
+			responseLayerStack.add(new ResponseLayer(w/2, h/2, s*2, 39));
+			responseLayerStack.add(new ResponseLayer(w/2, h/2, s*2, 51));
+	    }
+
+		if (octaves >= 3)
+	    {
+			responseLayerStack.add(new ResponseLayer(w/4, h/4, s*4, 75));
+			responseLayerStack.add(new ResponseLayer(w/4, h/4, s*4, 99));
+	    }
+
+		if (octaves >= 4)
+	    {
+			responseLayerStack.add(new ResponseLayer(w/8, h/8, s*8, 147));
+			responseLayerStack.add(new ResponseLayer(w/8, h/8, s*8, 195));
+	    }
+
+		if (octaves >= 5)
+		{
+			responseLayerStack.add(new ResponseLayer(w/16, h/16, s*16, 291));
+			responseLayerStack.add(new ResponseLayer(w/16, h/16, s*16, 387));
+        }
+		
+		for ( int i = 0; i < responseLayerStack.size(); i++ )
+		{
+			ResponseLayer layer = (ResponseLayer)responseLayerStack.get(i);
+			layer.createResponse(integralImg);
+		}
+	}
+	
+
+	protected void createResponseStackForQuickSearch()
+	{
+		int w = (width / initSample);
+		int h = (height / initSample);
+		int s = initSample;
+
+		// Calculate approximated determinant of hessian values
+		responseLayerStack.add(new ResponseLayer(w, h, s, 9));
+		responseLayerStack.add(new ResponseLayer(w, h, s, 15));
+		responseLayerStack.add(new ResponseLayer(w, h, s, 21));
+		
+		for ( int i = 0; i < responseLayerStack.size(); i++ )
+		{
+			ResponseLayer layer = (ResponseLayer)responseLayerStack.get(i);
+			layer.createResponse(integralImg);
+		}
+	}
+	
+	public int boxIntegral(long[][]lImg, int xstart, int yStart, int w, int h )
+	{
+        int cc1 = Math.min(integralImg[0].length-1,  xstart);
+        int cc2 = Math.min(integralImg[0].length-1,  xstart+w);
+        int rr1 = Math.min(integralImg.length-1, yStart);
+        int rr2 = Math.min(integralImg.length-1, yStart+h);
+		long A = 0;
+		long B = 0;
+		long C = 0;
+		long D = 0;
+		if (cc1 >= 0 && rr1 >= 0) 
+			A = lImg[rr1][cc1];
+		if (cc1 >= 0 && rr2 >= 0) 
+			B = lImg[rr2][cc1];
+		if (cc2 >= 0 && rr1 >= 0) 
+			C = lImg[rr1][cc2];
+		if (cc2 >= 0 && rr2 >= 0) 
+			D = lImg[rr2][cc2];
+		return (int)Math.max(0, A-B-C+D);
+	}
+	
+	public IPoint [] getDescriptors(boolean upright)
+	{
+		  // Check there are Ipoints to be described
+		  if (pointsVector.isEmpty())
+			  return null;
+
+		  // Get the size of the vector for fixed loop bounds
+		  int ipts_size = pointsVector.size();
+          IPoint []pts = new IPoint[ipts_size];
+
+		    // U-SURF loop just gets descriptors
+		  for (int i = 0; i < ipts_size; ++i)
+		  {
+		      IPoint point = (IPoint)pointsVector.get(i);	
+		      // Extract upright (i.e. not rotation invariant) descriptors
+		      point.getDescriptor(integralImg, upright, point);
+		      pts[i] = point;
+	      }
+		  return pts;
+	}
+ 
+
+	
+	private void interpolateExtremum(int r, int c, ResponseLayer t, ResponseLayer m, ResponseLayer b)
+	{
+		double []dD = new double[3];
+		int scaleTM = m.getHeight()/t.getHeight();
+		int scaleTB = b.getHeight()/t.getHeight();
+		dD[0] = (m.getResponse(r*scaleTM, (c + 1)*scaleTM) - m.getResponse(r*scaleTM, (c - 1)*scaleTM)) / 2.0;
+		dD[1] = (m.getResponse((r + 1)*scaleTM, c*scaleTM) - m.getResponse((r - 1)*scaleTM, c*scaleTM)) / 2.0;
+		dD[2] = (t.getResponse(r, c) - b.getResponse(r*scaleTB, c*scaleTB)) / 2.0;
+
+		double [][]H = new double[3][3];
+		double v = m.getResponse(r*scaleTM, c*scaleTM);
+		double dxx = m.getResponse(r*scaleTM, (c + 1)*scaleTM) + m.getResponse(r*scaleTM, (c - 1)*scaleTM) - 2 * v;
+		double dyy = m.getResponse((r + 1)*scaleTM, c*scaleTM) + m.getResponse((r - 1)*scaleTM, c*scaleTM) - 2 * v;
+		double dss = m.getResponse(r*scaleTM, c*scaleTM) + b.getResponse(r*scaleTB, c*scaleTB) - 2 * v;
+		double dxy = ( m.getResponse((r + 1)*scaleTM, (c + 1)*scaleTM) - m.getResponse((r + 1)*scaleTM, (c - 1)*scaleTM) - 
+		          m.getResponse((r - 1)*scaleTM, (c + 1)*scaleTM) + m.getResponse((r - 1)*scaleTM, (c - 1)*scaleTM) ) / 4.0;
+		double dxs = ( t.getResponse(r, c + 1) - t.getResponse(r, c - 1) - 
+		          b.getResponse(r*scaleTB, (c + 1)*scaleTB) + b.getResponse(r*scaleTB, (c - 1)*scaleTB)) / 4.0;
+		double dys = ( t.getResponse(r + 1, c) - t.getResponse(r - 1, c) - 
+		          b.getResponse((r + 1)*scaleTB, c*scaleTB) + b.getResponse((r - 1)*scaleTB, c*scaleTB) ) / 4.0;
+
+		H[0][0] = dxx ;
+		H[0][1] = dxy ;
+		H[0][2] = dxs ;
+		H[1][0] = dxy ;
+		H[1][1] = dyy ;
+		H[1][2] = dys ;
+		H[2][0] = dxs ;
+		H[2][1] = dys ;
+		H[2][2] = dss ;
+
+		double []result = new double[3];
+		double [][]invH = invert(H);
+		boolean isCloseEnough = true;
+		for ( int i = 0; i < 3; i++ )
+		{
+			double sum = 0;
+			for ( int j = 0; j< 3; j++)
+			{
+				sum+= invH[i][j]*dD[j];
+			}
+			result[i] = -sum;
+			isCloseEnough &= Math.abs( sum )< 0.5;
+		}
+		
+		// If point is sufficiently close to the actual extremum
+	   if ( isCloseEnough )
+ 	   {
+		   int filterStep = (m.getFilterSize() - b.getFilterSize());
+		   float xx = (float)(c + result[0]) * t.getSteps();
+		   float yy = (float)(r + result[1]) * t.getSteps();
+		   float scale = (float)((0.1333f) * (m.getFilterSize() + result[2] * filterStep));
+	       boolean laplacian = m.getLaplacian(r* scaleTM,c* scaleTM);
+	       IPoint ipt = new IPoint(xx,yy,scale,laplacian);
+	       pointsVector.add(ipt);
+	   }	
+	}
+
+	public static double[][] invert(double a[][])   
+	{
+		int n = a.length;
+		double x[][] = new double[n][n];
+		double b[][] = new double[n][n];
+		int index[] = new int[n];
+		for (int i=0; i<n; ++i) b[i][i] = 1;
+
+	    // Transform the matrix into an upper triangle
+	    gaussian(a, index);
+
+	    // Update the matrix b[i][j] with the ratios stored
+	    for (int i=0; i<n-1; ++i)
+	      for (int j=i+1; j<n; ++j)
+	    	  for (int k=0; k<n; ++k)
+		          b[index[j]][k]
+		            -= a[index[j]][i]*b[index[i]][k];
+
+		 // Perform backward substitutions
+	   for (int i=0; i<n; ++i) {
+	      x[n-1][i] = b[index[n-1]][i]/a[index[n-1]][n-1];
+	      for (int j=n-2; j>=0; --j) {
+   	         x[j][i] = b[index[j]][i];
+	         for (int k=j+1; k<n; ++k) {
+		         x[j][i] -= a[index[j]][k]*x[k][i];
+		     }
+		     x[j][i] /= a[index[j]][j];
+	      }
+	   }
+	   return x;
+    }
+	
+	// Method to carry out the partial-pivoting Gaussian
+	// elimination.  Here index[] stores pivoting order.
+
+	  public static void gaussian(double a[][],
+	    int index[]) {
+	    int n = index.length;
+	    double c[] = new double[n];
+
+	 // Initialize the index
+	    for (int i=0; i<n; ++i) index[i] = i;
+
+	 // Find the rescaling factors, one from each row
+	    for (int i=0; i<n; ++i) {
+	      double c1 = 0;
+	      for (int j=0; j<n; ++j) {
+	        double c0 = Math.abs(a[i][j]);
+	        if (c0 > c1) c1 = c0;
+	      }
+	      c[i] = c1;
+	    }
+
+	 // Search the pivoting element from each column
+	    int k = 0;
+	    for (int j=0; j<n-1; ++j) {
+	      double pi1 = 0;
+	      for (int i=j; i<n; ++i) {
+	        double pi0 = Math.abs(a[index[i]][j]);
+	        pi0 /= c[index[i]];
+	        if (pi0 > pi1) {
+	          pi1 = pi0;
+	          k = i;
+	        }
+	      }
+
+	   // Interchange rows according to the pivoting order
+	      int itmp = index[j];
+	      index[j] = index[k];
+	      index[k] = itmp;
+	      for (int i=j+1; i<n; ++i) {
+	        double pj = a[index[i]][j]/a[index[j]][j];
+
+	     // Record pivoting ratios below the diagonal
+	        a[index[i]][j] = pj;
+
+	     // Modify other elements accordingly
+	        for (int l=j+1; l<n; ++l)
+	          a[index[i]][l] -= pj*a[index[j]][l];
+	      }
+	    }
+	  }
+	
+	  float [][] getMatchingKeyPoints( IPoint [] iPtsToMatch )
+	  {
+		  int numRetries = NUM_TRIES;;
+		  float THRESHOLD = 2;
+		  float COARSE_THRESHOLD = 64;
+		  int maxInLiners = Integer.MIN_VALUE;
+		  float [][]bestM = null;
+		  long t1 = System.currentTimeMillis();
+		  int numMatchingPts = iPtsToMatch.length;
+		  for ( int i = 0; i < NUM_TRIES; i++ )
+		  {
+			  IPoint []pts1 = new IPoint[3];
+			  IPoint []pts2 = new IPoint[3];			  
+			  int nPairs = 0;
+			  for (int j = 0; j < 10; j++ )
+			  {
+				  int index1 = (int)(Math.random() * pointsVector.size());  
+                  pts1[nPairs] = (IPoint)pointsVector.get(index1);
+				  for ( int nn = 0; nn < numMatchingPts; nn++)
+				  {
+                      int index2 = (int)(Math.random() * iPtsToMatch.length);
+				      if (( Math.abs( pts1[nPairs].x - iPtsToMatch[index2].x ) < COARSE_THRESHOLD ) &&
+				          ( Math.abs( pts1[nPairs].y - iPtsToMatch[index2].y ) < COARSE_THRESHOLD ))
+				      {
+				           pts2[nPairs++] =  iPtsToMatch[index2];
+				           break;
+				      }
+				  }
+				  if (nPairs == 3) 
+				      break;
+			  }
+			  if (nPairs == 3 )
+			  {
+			      float [][]m = calculateMatchingMatrix( pts1, pts2 );
+	              int numInLiners = 0;            
+	              for ( int index = 0; index < pointsVector.size(); index++ )
+	              {
+	                  IPoint kp = (IPoint)pointsVector.get(index);
+	                  float x = m[0][0]* kp.x + m[0][1]*kp.y + m[0][2];
+	                  float y = m[1][0]* kp.x + m[1][1]*kp.y + m[1][2];
+	                  double sumE = 0; 
+	                  for ( int n = 0; n < iPtsToMatch.length; n++)
+	                  {
+	                      if (( Math.abs( x - iPtsToMatch[n].x ) < THRESHOLD)
+	                          && ( Math.abs( y - iPtsToMatch[n].y ) < THRESHOLD))
+	                      {
+	                          numInLiners++;
+	                          sumE += Math.abs( x - iPtsToMatch[n].x);
+	                          sumE += Math.abs( y - iPtsToMatch[n].y);
+	                      }
+	                  }
+	              }
+	              if ( numInLiners > maxInLiners )
+	              {
+	                  maxInLiners = numInLiners;
+	                  bestM = m;
+	                  System.out.println("num of in linars = " + numInLiners + ", at iteration #" + i );
+	              }
+			  }
+		  }
+          long t2 = System.currentTimeMillis();  
+          System.out.println("time to match KP = " + (t2-t1));
+          System.out.println("M = " + bestM[0][0] + "," + bestM[0][1] + "," + bestM[0][2]);
+          System.out.println("    " + bestM[1][0] + "," + bestM[1][1] + "," + bestM[1][2]);
+		  return bestM;
+	  }
+	 
+	  float [][] calculateMatchingMatrix( IPoint []pts1, IPoint []pts2)
+	  {
+		  float dx12 = pts1[0].x - pts1[1].x;
+		  float dx13 = pts1[0].x - pts1[2].x;
+		  float dy12 = pts1[0].y - pts1[1].y;
+		  float dy13 = pts1[0].y - pts1[2].y;
+		  float dxx12 = pts2[0].x - pts2[1].x;
+		  float dxx13 = pts2[0].x - pts2[2].x;
+		  float dyy12 = pts2[0].y - pts2[1].y;
+		  float dyy13 = pts2[0].y - pts2[2].y;
+		  float a = ( dxx13 * dy12 - dxx12 * dy13 )/( dx13*dy12 - dx12*dy13 );
+		  float b = ( dxx12 - a * dx12 )/ dy12;
+		  float c = pts2[0].x - a * pts1[0].x - b * pts1[0].y;
+		  float d = ( dyy13 * dy12 - dyy12 * dy13 )/( dx13*dy12 - dx12*dy13);
+		  float e = ( dyy12 - d * dx12 )/ dy12;
+		  float f = pts2[0].y - d * pts1[0].x - e * pts1[0].y;
+		  float [][]m = new float [3][3];
+		  m[0][0] = a;
+		  m[0][1] = b;
+		  m[0][2] = c;
+		  m[1][0] = d;
+		  m[1][1] = e;
+		  m[1][2] = f;
+		  m[2][0] = 0;
+		  m[2][1] = 0;
+		  m[2][2] = 1;
+		  float dx2 = pts1[1].x * a + pts1[1].y * b + c - pts2[1].x;
+          float dy2 = pts1[1].x * d + pts1[1].y * e + f - pts2[1].y;
+          float dx3 = pts1[2].x * a + pts1[2].y * b + c - pts2[2].x;
+          float dy3 = pts1[2].x * d + pts1[2].y * e + f - pts2[2].y;
+		  return m;
+	  }
+
+	  class IPoint
+	  {
+		  //! Coordinates of the detected interest point
+		  float x, y;
+		  //! Detected scale
+		  float scale;
+		  //! Orientation measured anti-clockwise from +ve x-axis
+		  float orientation;
+		  //! Sign of laplacian for fast matching purposes
+		  boolean laplacian;
+		  //! Vector of descriptor components
+		  float []descriptor;
+		  //! Placeholds for point motion (can be used for frame to frame motion analysis)
+		  float dx, dy;
+		  //! Used to store cluster index
+		  int clusterIndex;
+		  IPoint( float x, float y, float scale, boolean laplacian )
+		  {
+			  descriptor = new float[64];
+			  this.x = x;
+			  this.y = y;
+			  this.scale = scale;
+			  this.laplacian = laplacian;
+			  orientation = 0.0f;
+			  
+		  }
+		  
+		  // Gets the distance in descriptor space between Ipoints
+	    float getDescriptorDistance( IPoint newPoint )
+	    {
+	    	float sum=0.f;
+		    for(int i=0; i < NUM_DESCRIPTORS; ++i)
+			      sum += (this.descriptor[i] - newPoint.descriptor[i])*(this.descriptor[i] - newPoint.descriptor[i]);
+			return (float)Math.sqrt(sum);			  
+		}
+	    	    
+	    //! Calculate the value of the 2d gaussian at x,y
+	    float gaussianFactor(int x, int y, float sig)
+	    {
+	      return (float)((1.0f/(2.0f*Math.PI*sig*sig)) * Math.exp( -(x*x+y*y)/(2.0f*sig*sig)));
+	    }
+
+	    //-------------------------------------------------------
+
+	    //! Calculate the value of the 2d gaussian at x,y
+	    float gaussianFactor(float x, float y, float sig)
+	    {
+	      return (float) (1.0f/(2.0f*Math.PI*sig*sig) * Math.exp( -(x*x+y*y)/(2.0f*sig*sig)));
+	    }
+
+	    //-------------------------------------------------------
+
+	    //! Calculate Haar wavelet responses in x direction
+	    float haarX( long[][] lImg, int row, int column, int s )
+	    {
+	      return boxIntegral(lImg, row-s/2, column, s, s/2) 
+	        -1 * boxIntegral(lImg, row-s/2, column-s/2, s, s/2);
+	    }
+
+	    //-------------------------------------------------------
+
+	    //! Calculate Haar wavelet responses in y direction
+	    float haarY( long[][] lImg, int row, int column, int s )
+	    {
+	      return boxIntegral( lImg, row, column-s/2, s/2, s) 
+	        -1 * boxIntegral( lImg, row-s/2, column-s/2, s/2, s);
+	    }
+
+	    //-------------------------------------------------------
+
+	    //! Get the angle from the +ve x-axis of the vector given by (X Y)
+	    float getAngle(float X, float Y)
+	    {
+	    	return (float)Math.atan2(X, Y);
+	    }
+	    
+	    void getOrientation( long[][]lImg )
+	    {
+	      float gauss = 0.f;
+	      int s = Math.round(scale);
+	      int r = Math.round(y);
+	      int c = Math.round(x);
+	      float []resX = new float[109];
+	      float []resY = new float[109];
+	      float []Ang = new float[109];
+	      int id[] = {6,5,4,3,2,1,0,1,2,3,4,5,6};
+
+	      int idx = 0;
+	      // calculate haar responses for points within radius of 6*scale
+	      for(int i = -6; i <= 6; ++i) 
+	      {
+	        for(int j = -6; j <= 6; ++j) 
+	        {
+	          if(i*i + j*j < 36) 
+	          {
+	            gauss = (float)gauss25[id[i+6]][id[j+6]];
+	            resX[idx] = gauss * haarX(lImg, r+j*s, c+i*s, 4*s);
+	            resY[idx] = gauss * haarY(lImg, r+j*s, c+i*s, 4*s);
+	            Ang[idx] = getAngle(resX[idx], resY[idx]);
+	            ++idx;
+	          }
+	        }
+	      }
+
+	      // calculate the dominant direction 
+	      float sumX=0.f, sumY=0.f;
+	      float max=0.f;
+	      float ang1=0.f, ang2=0.f;
+
+	      // loop slides pi/3 window around feature point
+	      for(ang1 = 0; ang1 < 2*Math.PI;  ang1+=0.15f) {
+	        ang2 = (float)( ang1+Math.PI/3.0f > 2*Math.PI ? ang1-5.0f*Math.PI/3.0f : ang1+Math.PI/3.0f);
+	        sumX = sumY = 0.f; 
+	        for( int k = 0; k < Ang.length; ++k) 
+	        {
+	          // get angle from the x-axis of the sample point
+	          float ang = Ang[k];
+
+	          // determine whether the point is within the window
+	          if (ang1 < ang2 && ang1 < ang && ang < ang2) 
+	          {
+	            sumX+=resX[k];  
+	            sumY+=resY[k];
+	          } 
+	          else if (ang2 < ang1 && 
+	            ((ang > 0 && ang < ang2) || (ang > ang1 && ang < 2*Math.PI) )) 
+	          {
+	            sumX+=resX[k];  
+	            sumY+=resY[k];
+	          }
+	        }
+
+	        // if the vector produced from this window is longer than all 
+	        // previous vectors then this forms the new dominant direction
+	        if (sumX*sumX + sumY*sumY > max) 
+	        {
+	          // store largest orientation
+	          max = sumX*sumX + sumY*sumY;
+	          orientation = getAngle(sumX, sumY);
+	        }
+	      }
+	    }
+
+	    //! Get the modified descriptor. See Agrawal ECCV 08
+		//! Modified descriptor contributed by Pablo Fernandez
+		void getDescriptor(long[][]lImg, boolean bUpright, IPoint iPt )
+		{
+		  int y, x, sample_x, sample_y, count=0;
+		  int i = 0, ix = 0, j = 0, jx = 0, xs = 0, ys = 0;
+		  float scale, dx, dy, mdx, mdy, co, si;
+		  float gauss_s1 = 0.f, gauss_s2 = 0.f;
+		  float rx = 0.f, ry = 0.f, rrx = 0.f, rry = 0.f, len = 0.f;
+		  float cx = -0.5f, cy = 0.f; //Subregion centers for the 4x4 gaussian weighting
+
+		  scale = iPt.scale;
+		  x = Math.round(iPt.x);
+		  y = Math.round(iPt.y);  
+
+		  if (bUpright)
+		  {
+		    co = 1;
+		    si = 0;
+		  }
+		  else
+		  {
+			getOrientation(lImg);  
+		    co = (float) Math.cos(orientation);
+		    si = (float) Math.sin(orientation);
+		  }
+
+		  i = -8;
+
+		  //Calculate descriptor for this interest point
+		  while(i < 12)
+		  {
+		    j = -8;
+		    i = i-4;
+
+		    cx += 1.f;
+		    cy = -0.5f;
+
+		    while(j < 12) 
+		    {
+		      dx=dy=mdx=mdy=0.f;
+		      cy += 1.f;
+
+		      j = j - 4;
+
+		      ix = i + 5;
+		      jx = j + 5;
+
+		      xs = Math.round(x + ( -jx*scale*si + ix*scale*co));
+		      ys = Math.round(y + ( jx*scale*co + ix*scale*si));
+
+		      for (int k = i; k < i + 9; ++k) 
+		      {
+		        for (int l = j; l < j + 9; ++l) 
+		        {
+		          //Get coords of sample point on the rotated axis
+		          sample_x = Math.round(x + (-l*scale*si + k*scale*co));
+		          sample_y = Math.round(y + ( l*scale*co + k*scale*si));
+
+		          //Get the gaussian weighted x and y responses
+		          gauss_s1 = gaussianFactor(xs-sample_x,ys-sample_y,2.5f*scale);
+		          rx = haarX(lImg, sample_y, sample_x, 2*Math.round(scale));
+		          ry = haarY(lImg, sample_y, sample_x, 2*Math.round(scale));
+
+		          //Get the gaussian weighted x and y responses on rotated axis
+		          rrx = gauss_s1*(-rx*si + ry*co);
+		          rry = gauss_s1*(rx*co + ry*si);
+
+		          dx += rrx;
+		          dy += rry;
+		          mdx += Math.abs(rrx);
+		          mdy += Math.abs(rry);
+
+		        }
+		      }
+
+		      //Add the values to the descriptor vector
+		      gauss_s2 = gaussianFactor(cx-2.0f,cy-2.0f,1.5f);
+
+		      descriptor[count++] = dx*gauss_s2;
+		      descriptor[count++] = dy*gauss_s2;
+		      descriptor[count++] = mdx*gauss_s2;
+		      descriptor[count++] = mdy*gauss_s2;
+
+		      len += (dx*dx + dy*dy + mdx*mdx + mdy*mdy) * gauss_s2*gauss_s2;
+
+		      j += 9;
+		    }
+		    i += 9;
+		  }
+
+		  //Convert to Unit Vector
+		  len = (float)Math.sqrt(len);
+		  for( i = 0; i < 64; ++i)
+			  descriptor[i] /= len;
+
+		}	    
+	}
+}

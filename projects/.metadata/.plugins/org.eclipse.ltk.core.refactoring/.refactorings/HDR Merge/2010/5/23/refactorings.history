@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<session version="1.0">
+<refactoring comment="Rename resource &apos;HDR Merge/src/hdr/t.java&apos; to &apos;HdrbuilderServlet.java&apos;" description="Rename resource &apos;t.java&apos;" flags="7" id="org.eclipse.ltk.core.refactoring.rename.resource" input="src/hdr/t.java" name="HdrbuilderServlet.java" stamp="1275346043962" updateReferences="true"/>
+</session>

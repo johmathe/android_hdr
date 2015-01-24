@@ -1,0 +1,16 @@
+package com.tim.test.surf;
+
+public class AlignmentException extends Exception 
+{
+	String message;
+	
+	AlignmentException( String msg )
+	{
+		message = msg;
+	}
+	
+	public String toString()
+	{
+		return message;
+	}
+}

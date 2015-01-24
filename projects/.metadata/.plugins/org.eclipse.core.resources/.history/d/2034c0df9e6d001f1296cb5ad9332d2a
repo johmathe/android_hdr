@@ -1,0 +1,70 @@
+package hdr;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.PrintWriter;
+import java.util.logging.Logger;
+
+import javax.servlet.ServletException;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+import org.apache.commons.fileupload.FileItemIterator;
+import org.apache.commons.fileupload.FileItemStream;
+import org.apache.commons.fileupload.servlet.ServletFileUpload;
+import org.apache.commons.io.IOUtils;
+import org.apache.commons.io.output.ByteArrayOutputStream;
+
+public class HdrbuilderServlet extends HttpServlet {
+	HDRMerge merger;
+	byte[][] images;
+	final static int N_PICTURES = 4;
+	private static final Logger log =
+		Logger.getLogger(HdrbuilderServlet.class.getName());
+
+	public void doPost(HttpServletRequest req, HttpServletResponse res)
+	throws ServletException, IOException {
+		images = new byte[N_PICTURES][];
+		try {
+			ServletFileUpload upload = new ServletFileUpload();
+			res.setContentType("image/jpeg");
+
+			FileItemIterator iterator = upload.getItemIterator(req);
+			int i = 0;
+			while (iterator.hasNext()) {
+				FileItemStream item = iterator.next();
+				InputStream stream = item.openStream();
+				ByteArrayOutputStream outStream = new ByteArrayOutputStream();
+				
+				
+				if (item.isFormField()) {
+					log.warning("Got a form field: " + item.getFieldName());
+				} else {
+					log.warning("Got an uploaded file: " + item.getFieldName() +
+							", name = " + item.getName());
+
+					IOUtils.copy(stream, outStream);
+					outStream.toByteArray();
+					images[i++] = outStream.toByteArray();
+					outStream.flush();
+					outStream.close();
+					stream.close();
+				}
+				
+				
+			}
+		} catch (Exception ex) {
+			throw new ServletException(ex);
+		}
+		double exposures[] = {80,30,25,1.666};
+		merger = new HDRMerge(images, exposures);
+		String path = "/tmp/test.jpg";
+		merger.toFile(path);
+		res.setContentType("image/jpeg");
+	    
+	    FileInputStream in = new FileInputStream(path);
+	    IOUtils.copy(in, res.getOutputStream());
+	    in.close();
+	}
+}

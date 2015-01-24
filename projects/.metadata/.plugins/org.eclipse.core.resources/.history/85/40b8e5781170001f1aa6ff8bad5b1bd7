@@ -1,0 +1,124 @@
+package hdr;
+import java.awt.geom.AffineTransform;
+import java.awt.geom.Point2D;
+import java.awt.image.AffineTransformOp;
+import java.awt.image.BufferedImage;
+import java.awt.image.DataBuffer;
+import java.awt.image.DataBufferByte;
+import java.io.File;
+import java.io.IOException;
+
+import javax.imageio.ImageIO;
+
+import jjil.algorithm.Gray8AffineWarp;
+import jjil.algorithm.RgbAvgGray;
+import jjil.core.Error;
+import jjil.core.Gray8Image;
+import jjil.core.RgbImage;
+import jjil.core.RgbVal;
+import jjil.core.Sequence;
+import jjil.j2se.RgbImageJ2se;
+
+public class AlignNImages 
+{
+	private static final int NUM_SEGMENTS_X = 9;
+	private static final int NUM_SEGMENTS_Y = 9;
+	private String []hdrFileNames;
+	private BufferedImage[] unalignedImages;
+		
+	public AlignNImages( String []fileNames ) throws Exception
+	{
+		hdrFileNames = (String [])fileNames.clone();
+		int nImages = fileNames.length;
+		unalignedImages = new BufferedImage[nImages];
+		for ( int i = 0; i < nImages; i++ )
+		{
+			unalignedImages[i] = BufferedImageUtils.decodeForGrayBufferedImage( fileNames[i] );
+		}				
+	}
+	
+	public AlignNImages( byte[][] jpegImage ) throws Exception
+	{
+		hdrFileNames = (String [])fileNames.clone();
+		int nImages = fileNames.length;
+		unalignedImages = new BufferedImage[nImages];
+		for ( int i = 0; i < nImages; i++ )
+		{
+			unalignedImages[i] = BufferedImageUtils.decodeForGrayBufferedImage( fileNames[i] );
+		}				
+	}
+	
+	public RgbImage[] alignImages() throws Exception, Error
+	{
+		if ( unalignedImages == null )
+			return null;
+		int nImages = unalignedImages.length; 
+		if ( nImages < 2 )
+			return null;
+		RgbImage [] alignedImages = new RgbImage[nImages];
+		AffineTransform [] affines = new AffineTransform[nImages];
+		affines[0] = new AffineTransform();
+		int xDim = unalignedImages[0].getWidth();
+		int yDim = unalignedImages[0].getHeight();
+        DataBufferByte dataBufferRef = (DataBufferByte)unalignedImages[0].getRaster().getDataBuffer();
+		ImgAlignment aligner = new ImgAlignment( dataBufferRef.getData(), xDim, yDim, 6);
+		
+		//byte [] byteData = rgbToGrayArray( unalignedImages[0]);
+		//ImgAlignment aligner = new ImgAlignment( byteData, unalignedImages[0].getWidth(), unalignedImages[0].getHeight(), 5);
+		aligner.nSegmentX = NUM_SEGMENTS_X;
+		aligner.nSegmentY = NUM_SEGMENTS_Y;
+		int left = 0;
+		int right = xDim -1;
+		int top = 0;
+		int bot = yDim - 1;
+		Point2D [] ptsSrc = new Point2D[4]; 
+		Point2D [] ptsDst = new Point2D[4]; 
+		ptsSrc[0] = new Point2D.Double(left,  top);
+		ptsSrc[1] = new Point2D.Double(right, top);
+		ptsSrc[2] = new Point2D.Double(left,  bot);
+		ptsSrc[3] = new Point2D.Double(right, bot);
+		
+		for ( int i = 1; i < nImages; i++ )
+		{			
+	        DataBufferByte dataBufferSrc = (DataBufferByte)unalignedImages[i].getRaster().getDataBuffer();
+	    	affines[i] = aligner.alignImages( dataBufferSrc.getData());
+	    	affines[i].transform(ptsSrc, 0, ptsDst, 0, 4 );
+	    	// get bounds
+	    	left = Math.max( left, (int)ptsDst[0].getX());
+	    	left = Math.max( left, (int)ptsDst[2].getX());
+	    	right = Math.min( right, (int)ptsDst[1].getX());
+	    	right = Math.min( right, (int)ptsDst[3].getX());
+	    	top = Math.max( top, (int)ptsDst[0].getY());
+	    	top = Math.max( top, (int)ptsDst[1].getY());
+	    	bot = Math.min( bot, (int)ptsDst[2].getY());
+	    	bot = Math.min( bot, (int)ptsDst[3].getY());
+	    	System.out.println( affines[i].toString());
+		}
+		
+		int w = right - left;
+		int h = bot - top;
+		for ( int i = 0; i < nImages; i++ )
+		{			
+	    	try
+	    	{
+	    		BufferedImage bufferImg =BufferedImageUtils.decodeForRGBBufferedImage(hdrFileNames[i]);
+	    		alignedImages[i]= performAffineTransform( bufferImg, affines[i], left, top, w, h );
+	    	}
+	    	catch ( Exception e )
+	    	{
+	    		alignedImages[i]= null;
+	    	}
+		}
+		return alignedImages;
+	}
+	
+	public RgbImage performAffineTransform( BufferedImage img, AffineTransform affine, 
+			int x, int y, int width, int height ) throws Exception
+	{
+		AffineTransform invAffine = affine.createInverse();
+        AffineTransformOp op = new AffineTransformOp( invAffine, AffineTransformOp.TYPE_BILINEAR );
+        BufferedImage dstBuffer = new BufferedImage( img.getWidth(), img.getHeight(), BufferedImage.TYPE_3BYTE_BGR );
+        op.filter( img, dstBuffer );
+		return RgbImageJ2se.toRgbImage( dstBuffer.getSubimage(x, y, width, height ));
+	}	
+}

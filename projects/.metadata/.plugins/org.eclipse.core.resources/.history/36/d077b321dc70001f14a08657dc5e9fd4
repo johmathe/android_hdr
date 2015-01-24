@@ -1,0 +1,792 @@
+package hdr;
+
+import java.awt.Point;
+import java.awt.Rectangle;
+import java.awt.geom.AffineTransform;
+import java.awt.geom.NoninvertibleTransformException;
+import java.awt.geom.Point2D;
+import java.awt.image.BufferedImage;
+import java.awt.image.DataBufferByte;
+
+// image alignment algorithm.
+// 1) Use SURF keypoint detection to find the keypoints
+// 2) Use bit-wise comparision and successive approximation scheme to coarse XY alignment
+// 3) Segments the images into regions and find the three regions with the highest concentration 
+//    of keypoint for find alignment.
+// 4) Use the offset from the three regions to calculate the affine matrix
+
+public class ImgAlignment 
+{
+	private static final int []MASK_THRESHOLD = {5,4,3,3,2,2,2,1,1};
+	public static final boolean LOG_TIMMING = true;
+	public static final boolean LOG_DETAILS = false;
+	public static final int NUM_SEGMENTS_TO_FIT = 3;
+	public static final int DEFAULT_NUM_SEGMENTS = 7;
+	private static final int SURF_NUM_OCTIVES = 2;
+	private static final int SURF_NUM_INTERVAL = 4;
+	private static final int SURF_INIT_DOWN_SAMPLE = 5;
+	private static final float SURF_THRESHOLD = 30.0f;
+	
+	private int xDim, yDim; // image x and y dimension
+	private byte []imgRef;  // byte data array for reference image 
+	private byte []imgSrc;  // byte data array for image under test
+	private long [][]integralRef; 
+	private long [][]integralSrc;
+	private int mThreshold = 1;
+	private int layer;
+	private int [][]keyPointMap = null;
+	// index to the regions that has the highest keypoint count
+	Point [] segmentGridIndexs = new Point[NUM_SEGMENTS_TO_FIT];
+    public int nSegmentX = DEFAULT_NUM_SEGMENTS;
+    public int nSegmentY = DEFAULT_NUM_SEGMENTS;
+    // rectangles storing the three rectangle regions for fine image alignment
+    public Rectangle [] rects = new Rectangle[NUM_SEGMENTS_TO_FIT];
+
+    /**
+     * Constructor, use 8 bit gray scale images for alignment
+     * @param img1 - data array for reference image
+     * @param img2 - data array for image under test
+     * @param width - image width
+     * @param height - image height
+     * @param layer - number of layers, initial down sample to 2^layer
+     */
+    public ImgAlignment( byte[] img1, byte []img2, int width, int height, int layer ) throws Exception
+	{
+        this.layer = layer;
+        int imgSize = width * height;
+        if ( img1.length != imgSize || img2.length != imgSize )
+        {
+        	throw new Exception( "wrong image size" );
+        }
+	    imgRef =  (byte [])img1.clone();
+	    imgSrc =  (byte [])img2.clone();
+	    // generate integral image for fast sub sampling
+        integralRef = getIntegralImg(imgRef, width, height );
+        integralSrc = getIntegralImg(imgSrc, width, height );
+        xDim = width;
+        yDim = height;
+	}
+	
+    /**
+     * Constructor, use 8 bit gray scale images for alignment	
+     * @param refName - file name for the reference image
+     * @param srcName - file name for the image under test
+     * @param layer - number of layers, initial down sample to 2^layer
+     * @throws Exception
+     */
+	public ImgAlignment( String refName, String srcName, int layer ) throws Exception
+	{
+	    BufferedImage biRef = BufferedImageUtils.decodeForGrayBufferedImage( refName );
+        BufferedImage biSrc = BufferedImageUtils.decodeForGrayBufferedImage( srcName );
+        DataBufferByte dataBufferRef = (DataBufferByte)biRef.getRaster().getDataBuffer();
+        DataBufferByte dataBufferSrc = (DataBufferByte)biSrc.getRaster().getDataBuffer();
+        imgRef = dataBufferRef.getData();
+        imgSrc = dataBufferSrc.getData();
+        int height = biRef.getHeight();
+        int width  = biRef.getWidth();
+        int hSrc = biSrc.getHeight();
+        int wSrc = biSrc.getWidth();
+        if ( height * width != hSrc * wSrc )
+        {
+        	throw new Exception( "wrong image size ");
+        }
+        this.layer = layer;
+        integralRef = getIntegralImg(imgRef, width, height);
+        integralSrc = getIntegralImg(imgSrc, width, height);        
+        xDim = width;
+        yDim = height;
+	}
+
+	/**
+	 * constructor - set the reference image only
+	 * @param img1 - data array for reference image
+	 * @param width - image width
+	 * @param height - image height
+	 * @param layer - number of layers, initial down sample to 2^layer
+	 */
+    ImgAlignment( byte[]img1, int width, int height, int layer)
+    {
+        imgRef = (byte [])img1.clone();
+        integralRef = getIntegralImg(imgRef, width, height);
+        imgSrc = null;
+        integralSrc = null;
+        this.layer = layer;
+        xDim = width;
+        yDim = height;
+    }
+	
+
+    /**
+     * use the keypoint map to find the segments for fine image alignment
+     * @param map - 2D grid contains the keypoint distribution 
+     */
+    public void setKeyPointMap( int [][]map )    
+	{
+	    keyPointMap = (int[][])map.clone();
+	    int [][]grid = (int[][])keyPointMap.clone();
+	    
+	    // find the top three regions with the highest number of keypoints.
+	    //  can do the sorting but it will be faster to run it three times
+	    for ( int index = 0; index < NUM_SEGMENTS_TO_FIT; index++ )
+	    {
+	        int maxNumKPs = Integer.MIN_VALUE;
+	        int maxX = 0;
+	        int maxY = 0;
+    	    for ( int i = 0; i < keyPointMap.length; i++ )
+    	    {
+    	        for ( int j = 0; j < keyPointMap[0].length; j++)
+    	        {
+    	            if ( grid[i][j] >= maxNumKPs )
+    	            {
+    	                maxX = j;
+    	                maxY = i;
+    	                maxNumKPs =  grid[i][j];
+    	            }
+    	        }
+    	    }
+    	 
+    	    segmentGridIndexs[index] = new Point( maxX, maxY );
+            // set the max to 0, so it will not be counted for the next loop
+    	    grid[maxY][maxX] = 0;
+    	    
+    	    if ( nSegmentX > 5 && nSegmentY > 5 )
+    	    {
+    	    	// set the 8 neighbor grid points to zero to spread out the segments a little bit to get better fitting accuracy    
+	    	    for ( int mm = -1; mm < 2; mm++ )    	    	
+	    	    {
+	    	    	int y = maxY + mm;
+	    	    	for ( int n = -1; n < 2; n++ )
+	    	    	{
+	    	    		int x = maxX + n;
+	    	    		if ( x >= 0 && x < keyPointMap[0].length && y >= 0 && y < keyPointMap.length )
+	    	    		{
+	    	    			grid[y][x] = 0;
+	    	    		}
+	    	    	}
+	    	    }
+    	    }
+    	    
+            // it is not good to have all the segment in a straight line. 
+    	    //  Will get divide by zero error when calculate affine matrix
+            if ( index == 2 )
+            {
+                if (( segmentGridIndexs[0].x == segmentGridIndexs[1].x ) && 
+                	( segmentGridIndexs[0].x == maxX ))
+                {
+                    for ( int k = 0; k < keyPointMap.length; k++ )
+                    {
+                        grid[k][maxX] = 0;
+                    }
+                    index--;
+                }
+                else if ( ( segmentGridIndexs[0].y == segmentGridIndexs[1].x ) && 
+                		  ( segmentGridIndexs[0].y == maxY ))
+                {
+                    for ( int k = 0; k < keyPointMap[0].length; k++ )
+                    {
+                        grid[maxY][k] = 0;
+                    }
+                    index--;                    
+                }
+            }
+	    }
+	}
+	
+    /**
+     * create an integral image for fast image sub-sampling
+     * @param img - byte data array
+     * @param width - image width
+     * @param height - image height
+     * @return integral image as 2D long array
+     */
+    private long[][] getIntegralImg( byte[]img, int width, int height )
+    {
+        long sum;
+        long [][]integralImg = new long[height][width];
+        for ( int y = 0; y < height; y++)
+        {
+            int d = img[y * width];
+            if (d < 0) d+= 256;
+            sum = integralImg[y][0] = d; 
+            for ( int x = 1; x < width; x++)
+            {
+                d = img[y * width + x];
+                if (d < 0) d+= 256;
+                sum+= d;
+                integralImg[y][x] = sum;
+            }
+        }
+        // sum vertically
+        for ( int y = 1; y < height; y++ )
+        {
+            for ( int x = 0; x < width; x++)
+            {
+                integralImg[y][x] += integralImg[y-1][x];
+            }
+        }
+        return integralImg;
+    }
+
+    /**
+     * binarize the image using the median value and get the sub region 
+     * @param img - byte data array
+     * @param startX - sub-region start X position
+     * @param startY - sub-region start Y position
+     * @param width - sub-region width
+     * @param height - sub-region height
+     * @param maskThreshold - mask threshold value 
+     * @return
+     */
+    private byte [][] getBinaryImg(byte []img, int startX, int startY, 
+			int width, int height, int maskThreshold )
+	{
+		long []histo = new long[256];
+		int [][] subImg = new int[height][width];
+		// get histogram 
+		for ( int y = 0, r = startY; y < height; y++, r++ )
+		{
+			for ( int x = 0, c = startX ; x < width; x++, c ++)
+			{
+				int data = img[r*xDim + c];
+	            if (data < 0) data+= 256;
+				subImg[y][x] = data;
+				if ( data > 255 || data < 0)
+				{
+				    data = 255;
+				}
+				histo[data]++;
+			}
+		}
+		
+		// look for median value
+		long medianPixel = width * height /2;
+		long numPixel = 0;
+		int median;
+		for ( median = 0; median < 256; median++ )
+		{
+			numPixel += histo[median];
+			if (numPixel > medianPixel)
+				break;
+		}
+		// bit 0 to store whether the pixel is above or below threshold
+		// bit 2 to store whether the pixel is stable (1) or noise to be masked out (0) 
+		byte [][]binImg = new byte[height][width];
+		for ( int y = 0; y < height; y++ )
+		{
+			for ( int x = 0; x < width; x++)
+			{
+				binImg[y][x] = (byte)( subImg[y][x]> median ?1:0);
+				if ( Math.abs(subImg[y][x] - median) > maskThreshold )
+				{
+				    binImg[y][x] |= 0x4;
+				}
+			}
+		}
+		return binImg;
+		
+	}
+	
+    /**
+     * bininarize the and subsample the image and using the median value and get the subregion    
+     * @param lImg - integral image array
+     * @param startX - sub-region starting X position
+     * @param startY - sub-region starting Y position
+     * @param width - image width
+     * @param height - image height
+     * @param blockSize - subsample size
+     * @param maskThreshold - mask threshold
+     * @return
+     */
+	private byte[][] getBinaryImg(long [][]lImg, int startX, int startY, 
+			int width, int height, int blockSize, int maskThreshold )
+	{
+		long []histo = new long[256];
+		int [][] subImg = new int[height][width];
+		long area = blockSize * blockSize;
+		// sub-sample and create historgram
+		for ( int y = 0, r = startY; y < height; y++, r += blockSize )
+		{
+			for ( int x = 0, c = startX ; x < width; x++, c += blockSize)
+			{
+				// use block integral for subsampling
+				long A = lImg[r][c];
+				long B = lImg[r][c+blockSize-1];
+				long C = lImg[r+blockSize-1][c];
+				long D = lImg[r+blockSize-1][c+blockSize-1];
+				int data = (int)((A+D - B-C) /area);
+				if ( data > 255 )
+				    data = 255;
+				if ( data < 0)
+				    data = 0;
+				subImg[y][x] = data;
+				histo[data]++;
+			}
+		}
+		// look for median value
+		long medianPixel = width * height /2;
+		long numPixel = 0;
+		int median;
+		for ( median = 0; median < 256; median++ )
+		{
+			numPixel += histo[median];
+			if (numPixel > medianPixel)
+				break;
+		}
+
+		// bit 0 to store whether the pixel is above or below threshold
+		// bit 2 to store whether the pixel is stable (1) or noise (0) 
+		byte [][]binImg = new byte[height][width];
+		for ( int y = 0; y < height; y++ )
+		{
+			for ( int x = 0; x < width; x++)
+			{
+				binImg[y][x]= ( byte )( ( subImg[y][x] > median ) ? 1:0 );
+				if ( Math.abs(subImg[y][x] - median) > maskThreshold )
+				{
+				    binImg[y][x] |= 0x04;
+				
+				}
+			}
+		}
+		return binImg;
+	}
+	
+    /**
+     * get integer offset between reference binary image and image under test, 
+     * using binary correlation with 8 single pixel offset for each direction and 
+     * return the position with minimum rate.    
+     * bit 0 stores the binary pixel value
+     * bit 2 stores whether we should include the pixel into consideration.
+     * @param refBinImg 
+     * @param srcBinImg
+     * @return point offset that contain minimum mismatch rate   
+     */
+    private Point getOffset( byte [][]refBinImg, byte[][]srcBinImg )
+	{
+		float minError = Float.MAX_VALUE;
+		int offsetX=0, offsetY=0;
+		float []errArray = new float[9];
+		int index = 0;
+		for (int m = -1; m < 2; m++)
+		{
+			for ( int n = -1; n < 2; n++)
+			{
+				int err = 0;
+				int totalPixel = 0;
+				for ( int y = 1; y < refBinImg.length-1; y++)
+				{
+					for ( int x = 1; x < refBinImg[0].length-1; x++)
+					{
+					    int tmp = refBinImg[y][x] + srcBinImg[y+m][x+n]; 
+						if (( tmp & 0x8 ) != 0 )
+						{
+						    totalPixel++;
+							if ( (tmp & 1) != 0)
+							{
+								err++;
+							}
+						}
+					}
+				}
+				if (totalPixel != 0)
+				{
+				    float errRatio = (float)err/(float)totalPixel;
+				    errArray[index++] = errRatio;
+    				if ( errRatio < minError )
+    				{
+    					minError = errRatio;
+    					offsetX = n;
+    					offsetY = m;
+    				}
+				}
+			}
+		}
+		return new Point( offsetX, offsetY );
+	}
+	
+
+    private float getMismatchPixelsRate(  byte[][]refBinImg, byte[][] srcBinImg, 
+            int offsetX, int offsetY, int border )
+    {
+        if (( Math.abs(offsetX) > border )|| ( Math.abs( offsetY ) > border ))
+        {
+            return 0;
+        }
+        int err = 0;
+        int totalPixel = 0;
+        for ( int y = border; y < refBinImg.length-border; y++)
+        {
+            for ( int x = border; x < refBinImg[0].length-border; x++)
+            {
+                int tmp = refBinImg[y][x] + srcBinImg[y+offsetY][x+offsetX]; 
+                if (( tmp & 0x8 ) != 0 )
+                {
+                    totalPixel++;
+                    if ( (tmp & 1) != 0)
+                    {
+                        err++;
+                    }
+                }
+            }
+        }        
+        if ( totalPixel == 0) 
+            return 1;
+        else
+            return ((float)err / (float)totalPixel);
+    }
+    
+    /**
+     * get integer offset between reference binary image and image under test, 
+     * using binary correlation with 8 single pixel offset for each direction and 
+     * return the position with minimum rate.
+     * use interpolation to get sub-pixel accuracy     
+     * bit 0 stores the binary pixel value
+     * bit 2 stores whether we should include the pixel into consideration.
+     * @param refBinImg 
+     * @param srcBinImg
+     * @return point offset that contain minimum mismatch rate   
+     */
+    private Point2D.Float getOffsetWithInterpolation( byte [][]refBinImg, byte[][]srcBinImg )
+    {
+        float minError = Float.MAX_VALUE;
+        int border = 2;
+        int offsetX=0, offsetY=0;
+        int boxWidth = 2 * border + 1;
+        float []errArray = new float[boxWidth*boxWidth];
+        for ( int i = 0; i < errArray.length ; i++ )
+        {
+            errArray[i] = -1;
+        }
+        for ( int m = -1; m < 2; m++)
+        {
+            for ( int n = -1; n < 2; n++)
+            {
+                float errRate = getMismatchPixelsRate( refBinImg, srcBinImg, n, m, border );
+                errArray[boxWidth*(m+border) + n + border] = errRate;
+                if ( errRate < minError )
+                {
+                    minError = errRate;
+                    offsetX = n;
+                    offsetY = m;
+                }
+                
+            }
+        }
+        // now do error matching for pixel near the peak pixel
+        for ( int m = offsetY -1; m < offsetY+2; m++ )
+        {
+            for ( int n = offsetX - 1; n < offsetX + 2; n++ )
+            {
+                if ( errArray[boxWidth*(m+border) + n + border] == -1)
+                {
+                    errArray[boxWidth*(m+border) + n + border] =
+                        getMismatchPixelsRate( refBinImg, srcBinImg, n, m, border );
+                }
+            }       
+        }
+        
+        // now do linear interpolation 
+        float xPos;
+        float zx0 =  1 -errArray[boxWidth*(offsetY + border) + offsetX + border-1];
+        float zx1 =  1- errArray[boxWidth*(offsetY + border) + offsetX + border];
+        float zx2 =  1- errArray[boxWidth*(offsetY + border) + offsetX + border+1];
+        if ( zx0 > zx1 )
+        {
+            xPos = offsetX - 1;
+        }
+        else if ( zx2 > zx1 )
+        {
+            xPos = offsetX + 1;
+        }
+        else
+        {
+            float norm =  2.0f * (zx2 + zx0 - 2 * zx1);
+            if ( norm != 0 )
+            {
+                xPos =  offsetX + (zx0 - zx2) / norm;
+            }
+            else
+            {
+                xPos = offsetX;
+            }
+        }
+        float zy0 = 1- errArray[boxWidth*(offsetY + border-1) + offsetX + border];
+        float zy1 = 1- errArray[boxWidth*(offsetY + border) + offsetX + border];
+        float zy2 = 1- errArray[boxWidth*(offsetY + border+1) + offsetX + border];
+        float yPos;
+        if ( zy0 > zy1 )
+        {
+            yPos = offsetY - 1;   
+        }
+        else if ( zy2 > zy1 )
+        {
+            yPos = offsetY + 1;
+        }
+        else 
+        {
+            float norm =  2.0f * (zy2 + zy0 - 2 * zy1);
+            if ( norm != 0 )
+            {
+                yPos =  offsetY + (zy0 - zy2) / norm;
+            }
+            else
+            {
+                yPos = offsetY;
+            }
+        }
+        return new Point2D.Float( xPos, yPos );
+    }
+    
+    /**
+     * align image
+     * @param imgSrc - byte array of data under test
+     * @return affine matrix transforming reference image with image under test 
+     * @throws Exception
+     */
+    public AffineTransform alignImages( byte[]imgSrc ) throws Exception
+    {
+        this.imgSrc = (byte[])imgSrc.clone();
+        try
+        {
+            integralSrc = getIntegralImg( imgSrc, xDim, yDim );
+        }
+        catch( Exception e )
+        {
+            System.out.println("cannot load the image, reason = " + e.toString() );
+            throw e;
+        }
+        return alignImages();
+    }
+    
+    /**
+     * align image - assuming the image under test is already set
+     * @return affine matrix transforming reference image with image under test 
+     * @throws Exception
+     */    
+    public AffineTransform alignImages()
+    {
+        long t1 =System.currentTimeMillis();
+        int blockSize = 1 << layer;
+        int edgeSize = 2 * blockSize;
+        if ( keyPointMap == null )
+        {
+        	long tt1 = System.currentTimeMillis();
+            SURFKeyPointSearch surf = new SURFKeyPointSearch(integralRef, 
+            		SURF_NUM_OCTIVES, SURF_NUM_INTERVAL, SURF_INIT_DOWN_SAMPLE, SURF_THRESHOLD );
+            setKeyPointMap( surf.getKeyPointHistoMap(nSegmentX, nSegmentY, edgeSize ) );     
+            surf = null;
+            long tt2 = System.currentTimeMillis();
+            if ( LOG_TIMMING )
+            {
+            	System.out.println( "time to do key point detection = " + ( tt2-tt1));
+            }
+        }
+        int subImgWidth  = ( xDim / blockSize )-4;
+        int subImgHeight = ( yDim / blockSize )-4;
+        int regionWidth  = (( xDim - 4 * blockSize )/ keyPointMap[0].length );
+        int regionHeight = (( yDim - 4 * blockSize )/ keyPointMap.length );
+        int xCorner = ( xDim - subImgWidth * blockSize )/2;
+        int yCorner = ( yDim - subImgHeight * blockSize )/2;
+        Point alignmentOffset = new Point( 0, 0 );
+        int index, m;
+        int edge = 2 << 4;
+        // do coarse alignment without segmentation
+        for ( index = layer, m= 0; index >= 3; index--, m++)
+        {
+            byte [][]refBinImg;
+            byte [][]srcBinImg;
+            mThreshold = MASK_THRESHOLD[index];
+            refBinImg = getBinaryImg(integralRef, xCorner, yCorner, 
+                    subImgWidth, subImgHeight, blockSize, mThreshold );
+            srcBinImg = getBinaryImg(integralSrc, xCorner+ alignmentOffset.x, 
+            		yCorner+alignmentOffset.y, subImgWidth, subImgHeight, blockSize,  mThreshold );
+            Point offsetPt = getOffset(refBinImg, srcBinImg);
+            alignmentOffset.translate( blockSize * offsetPt.x, blockSize * offsetPt.y );
+            
+            log( "iteration #" + index + " offset = " + alignmentOffset.toString());                 
+            blockSize /= 2;
+            subImgWidth *= 2;
+            subImgHeight*= 2;
+        }
+
+        // now do the three regions with highest number of keypoints
+        Point2D.Float [] segmentOffsets = new Point2D.Float[NUM_SEGMENTS_TO_FIT];
+        Point [] segmentCorners = new Point[NUM_SEGMENTS_TO_FIT];
+        for ( int n = 0; n < 3; n++ )
+        {
+            segmentOffsets[n] = new Point2D.Float( alignmentOffset.x, alignmentOffset.y );
+            segmentCorners[n] = new Point( segmentGridIndexs[n].x * regionWidth  + edgeSize,
+            							   segmentGridIndexs[n].y * regionHeight + edgeSize );
+            rects[n] = new Rectangle( segmentCorners[n].x, segmentCorners[n].y, regionWidth, regionHeight );
+        }
+        
+        subImgWidth =  ( regionWidth - 2* edge ) /blockSize;
+        subImgHeight = ( regionHeight - 2* edge )/blockSize;
+        
+        for ( ; index >= 0; index--, m++)
+        {
+            for ( int n = 0; n < 3; n++)
+            {
+                byte [][]refBinImg;
+                byte [][]srcBinImg;
+                mThreshold = MASK_THRESHOLD[index];
+                
+                if ( index != 0 )
+                {
+                    refBinImg = getBinaryImg(integralRef, segmentCorners[n].x, segmentCorners[n].y, 
+                            subImgWidth, subImgHeight, blockSize, mThreshold );
+                    srcBinImg = getBinaryImg(integralSrc, 
+                            (int)( segmentCorners[n].x + segmentOffsets[n].x ), 
+                            (int)( segmentCorners[n].y + segmentOffsets[n].y ), 
+                            subImgWidth, subImgHeight, blockSize,  mThreshold );
+                    Point offset = getOffset(refBinImg, srcBinImg);
+                    segmentOffsets[n] = new Point2D.Float( segmentOffsets[n].x + blockSize * offset.x,
+                    									   segmentOffsets[n].y + blockSize * offset.y );
+                }                
+                else
+                {
+                    // get sub pixel resolution
+                    refBinImg = getBinaryImg(imgRef, segmentCorners[n].x, segmentCorners[n].y,
+                            subImgWidth, subImgHeight,  mThreshold );
+                    srcBinImg = getBinaryImg(imgSrc,  
+                    						(int)( segmentCorners[n].x + segmentOffsets[n].x ), 
+                            				(int)( segmentCorners[n].y + segmentOffsets[n].y ), 
+                            				subImgWidth, subImgHeight,   mThreshold );
+                    Point2D.Float offset = getOffsetWithInterpolation( refBinImg, srcBinImg ); 
+                    segmentOffsets[n] = new Point2D.Float( segmentOffsets[n].x + offset.x,
+							   							   segmentOffsets[n].y + offset.y );
+                } 
+            }
+            
+            if ( LOG_DETAILS)
+            {
+	            for ( int n= 0; n < 3; n++)
+	            {
+	                log("offset = " + segmentOffsets[n].toString()+ ", corner = " + segmentCorners[n].toString());
+	            }
+            }
+            
+            blockSize /= 2;
+            subImgWidth *= 2;
+            subImgHeight*= 2;            
+        }
+
+        long t2 =System.currentTimeMillis();
+        if ( LOG_TIMMING )
+        {
+        	System.out.println("time for image alignment  = " + (t2-t1));
+        }
+
+        Point2D.Double [] ptsIn  = new Point2D.Double[NUM_SEGMENTS_TO_FIT];
+        Point2D.Double [] ptsOut = new Point2D.Double[NUM_SEGMENTS_TO_FIT];
+        for ( int i = 0; i < NUM_SEGMENTS_TO_FIT; i++ )
+        {
+        	ptsIn[i] = new Point2D.Double( segmentCorners[i].x + regionWidth/2 , 
+        								   segmentCorners[i].y + regionHeight/2);
+        	ptsOut[i] = new Point2D.Double( ptsIn[i].x + segmentOffsets[i].x,
+        									ptsIn[i].y + segmentOffsets[i].y );
+        }
+        return getAffineMatrix( ptsIn, ptsOut );
+    }
+
+    /**
+     * calculate the affine matrix by mapping three input points to three output point
+     *  6 equations 6 unknown
+     * @param ptIn array of input points
+     * @param ptOut array of output points
+     * @return
+     */
+    public AffineTransform getAffineMatrix( Point2D.Double [] ptIn, Point2D.Double [] ptOut )
+    {
+        // now get the affine matrix, by solving 6 equations 6 unknowns
+        double dx01 = ptIn[0].x - ptIn[1].x;
+        double dx02 = ptIn[0].x - ptIn[2].x;
+        double dy01 = ptIn[0].y - ptIn[1].y;
+        double dy02 = ptIn[0].y - ptIn[2].y;
+        double dxx01 = ptOut[0].x - ptOut[1].x;
+        double dxx02 = ptOut[0].x - ptOut[2].x;
+        double dyy01 = ptOut[0].y - ptOut[1].y;
+        double dyy02 = ptOut[0].y - ptOut[2].y;
+        double det = ( dx02*dy01 - dx01*dy02 );
+        double a = 1, b = 0, c = 0;
+        double d = 0, e = 1, f = 0;
+        AffineTransform affine = null;
+        if ( det != 0 )
+        {
+            a = ( dxx02 * dy01 - dxx01 * dy02 )/ det;
+            b = ( dxx01 * dx02 - dxx02 * dx01) / det;
+            c = ptOut[0].x - a *  ptIn[0].x - b *  ptIn[0].y;
+            d = ( dyy02 * dy01 - dyy01 * dy02 )/( dx02*dy01 - dx01*dy02);
+            e = ( dyy01 * dx02 - dyy02 * dx01) /det;
+            f = ptOut[0].y - d *  ptIn[0].x - e *  ptIn[0].y;
+            affine = new AffineTransform( a, d, b, e, c, f );
+        }
+        else
+        {
+            if ( dy01 == dy02 )
+            {
+                // special case, when y1 = y2 = y3
+                double angle = Math.atan( dyy01/dxx01 );
+                a = Math.cos( angle );
+                b = Math.sin( angle );
+                c = ptOut[0].x - a * ptIn[0].x - b * ptIn[0].y;
+                d = -Math.sin( angle );
+                e = a;
+                f = ptOut[0].y - d * ptIn[0].x - e * ptIn[0].y;
+                affine = new AffineTransform( a, d, b, e, c, f );
+            }
+            else
+            {
+                // try other direction then invert the matrix
+                det = ( dxx02*dyy01 - dxx01*dyy02 );
+                if ( det != 0 )
+                {
+                    a = ( dx02 * dyy01 - dx01 * dyy02 )/ det;
+                    b = ( dx01 * dxx02 - dx02 * dxx01) / det;
+                    c = ptIn[0].x - a *  ptOut[0].x - b *  ptOut[0].y ;
+                    d = ( dy02 * dyy01 - dy01 * dyy02 )/ det;
+                    e = ( dy01 * dxx02 - dy02 * dxx01) /det;
+                    f = ptIn[0].y -  d *  ptOut[0].x - e *  ptOut[0].y ;
+                    affine = new AffineTransform( a, d, b, e, c, f );
+                    try
+                    {
+                        affine = affine.createInverse();
+                    }
+                    catch ( NoninvertibleTransformException err )
+                    {
+                        // rotation = 0, shear = 0
+                        float deltaX = 0;
+                        float deltaY = 0;
+                        for (int i = 0; i < 3; i++ )
+                        {
+                            deltaX += ptOut[i].x - ptIn[i].x;
+                            deltaY += ptOut[i].y - ptIn[i].y;
+                        }
+                        affine = new AffineTransform( 1, 0, 0, 1, deltaX/3, deltaY/3 );                                            
+                    }
+                }
+                else
+                {
+                    // rotation = 0, shear = 0
+                    float deltaX = 0;
+                    float deltaY = 0;
+                    for (int i = 0; i < 3; i++ )
+                    {
+                        deltaX += ptOut[i].x - ptIn[i].x;
+                        deltaY += ptOut[i].y - ptIn[i].y;
+                    }
+                    affine = new AffineTransform( 1, 0, deltaX/3, 0, 1, deltaY/3 );                    
+                }
+            }
+        }
+        return affine;        
+    }
+        
+    private void log( String logStr )
+    {    	
+    	if ( LOG_DETAILS )
+    	{
+    		System.out.println( logStr );
+    	}
+    }
+}

@@ -1,0 +1,840 @@
+package com.tim.test.surf;
+
+import java.awt.Point;
+import java.awt.Transparency;
+import java.awt.color.ColorSpace;
+import java.awt.geom.AffineTransform;
+import java.awt.geom.NoninvertibleTransformException;
+import java.awt.image.AffineTransformOp;
+import java.awt.image.BufferedImage;
+import java.awt.image.ColorModel;
+import java.awt.image.ComponentColorModel;
+import java.awt.image.DataBuffer;
+import java.awt.image.DataBufferByte;
+import java.awt.image.Raster;
+import java.awt.image.SampleModel;
+import java.awt.image.WritableRaster;
+import java.util.Hashtable;
+
+import jjil.core.RgbImage;
+import jjil.core.Sequence;
+
+public class ImgAlignment 
+{
+	private static final int []MASK_THRESHOLD = {3,3,3,3,2,2,2,1,1};
+	// do grey scale for image alignment
+	byte []imgRef;
+	byte []imgSrc;
+	long [][]integralRef;
+	long [][]integralSrc;
+	private int xDim, yDim;
+	int mThreshold = 1;
+	int layer;
+	int [][]keyPointMap = null;
+	// index to the three regions that has the highest keypoint count
+    int []regionXIndexs = new int[3];
+    int []regionYIndexs = new int[3];
+    public int nSegmentX = 7;
+    public int nSegmentY = 7;
+	    
+    public ImgAlignment( byte[] img1, byte []img2, int width, int height, int layer )
+	{
+        this.layer = layer;
+	    imgRef =  (byte [])img1.clone();
+	    imgSrc =  (byte [])img2.clone();
+        integralRef = getIntegralImg(imgRef, width, height );
+        integralSrc = getIntegralImg(imgSrc, width, height );
+        xDim = width;
+        yDim = height;
+	}
+	
+	public ImgAlignment( byte[][]img1, byte[][]img2, int layer)
+	{
+	    int height = img1.length;
+	    int width  = img1[0].length;
+	    int index = 0;
+	    imgRef = new byte[height * width];
+        imgSrc = new byte[height * width];
+	    for ( int y = 0; y < height; y++ )
+	    {
+	        for ( int x = 0; x < height; x++ )
+	        {
+	            imgRef[index] = img1[y][x];
+	            imgSrc[index++] = img2[y][x];	            
+	        }
+	    }
+		integralRef = getIntegralImg(imgRef, width, height);
+		integralSrc = getIntegralImg(imgSrc, width, height);
+        xDim = width;
+        yDim = height;
+		this.layer = layer;
+	}
+	
+	public ImgAlignment( String refName, String srcName, int layer ) throws Exception
+	{
+	    BufferedImage biRef = BufferedImageUtils.decodeForGrayBufferedImage( refName );
+        BufferedImage biSrc = BufferedImageUtils.decodeForGrayBufferedImage( srcName );
+        DataBufferByte dataBufferRef = (DataBufferByte)biRef.getRaster().getDataBuffer();
+        DataBufferByte dataBufferSrc = (DataBufferByte)biSrc.getRaster().getDataBuffer();
+        imgRef = dataBufferRef.getData();
+        imgSrc = dataBufferSrc.getData();
+        int height = biRef.getHeight();
+        int width  = biRef.getWidth();
+        this.layer = layer;
+        integralRef = getIntegralImg(imgRef, width, height);
+        integralSrc = getIntegralImg(imgSrc, width, height);        
+        xDim = width;
+        yDim = height;
+	}
+	
+    ImgAlignment( byte[]img1, int width, int height, int layer)
+    {
+        imgRef = (byte [])img1.clone();
+        integralRef = getIntegralImg(imgRef, width, height);
+        imgSrc = null;
+        integralSrc = null;
+        this.layer = layer;
+        xDim = width;
+        yDim = height;
+    }
+	
+
+    public void setKeyPointMap( int [][]map)
+	{
+	    keyPointMap = (int [][])map.clone();
+	    // find the top three regions with the highest number of keypoints.
+	    //  can do the sorting but it will be faster to run it three times
+	    for ( int index = 0; index < 3; index++ )
+	    {
+	        int maxNumKPs = Integer.MIN_VALUE;
+	        int maxX = 0;
+	        int maxY = 0;
+    	    for ( int i = 0; i < keyPointMap.length; i++ )
+    	    {
+    	        for ( int j = 0; j < keyPointMap[0].length; j++)
+    	        {
+    	            if ( keyPointMap[i][j] >= maxNumKPs )
+    	            {
+    	                maxX = j;
+    	                maxY = i;
+    	                maxNumKPs =  keyPointMap[i][j];
+    	            }
+    	        }
+    	    }
+    	    regionXIndexs[index] = maxX;
+            regionYIndexs[index] = maxY;
+            // set the max to 0, so it will not be counted for the next loop
+    	    keyPointMap[maxY][maxX] = 0;
+            // it is not good to have all the segment in a straight line. Divide by zero error when calculate affine matrix
+            if ( index == 2 )
+            {
+                if (( regionXIndexs[0] == regionXIndexs[1] ) && ( regionXIndexs[0] == maxX ))
+                {
+                    for ( int k = 0; k < keyPointMap.length; k++ )
+                    {
+                        keyPointMap[k][maxX] = 0;
+                    }
+                    index--;
+                }
+                else if ( ( regionYIndexs[0] == regionYIndexs[1] ) && ( regionYIndexs[0] == maxY ))
+                {
+                    for ( int k = 0; k < keyPointMap[0].length; k++ )
+                    {
+                        keyPointMap[maxY][k] = 0;
+                    }
+                    index--;                    
+                }
+            }
+	    }
+	}
+	
+	private long[][] getIntegralImg( byte[][]img )
+	{
+		int w = img[0].length;
+		int h = img.length;
+		long sum;
+		long [][]integralImg = new long[h][w];
+		for ( int y = 0; y < h; y++)
+		{
+		    int d = img[y][0];
+		    if (d < 0) d+= 256;
+			sum = integralImg[y][0] = d; 
+			for ( int x = 1; x < w; x++)
+			{
+                d = img[y][x];
+                if (d < 0) d+= 256;
+				sum+= d;
+				integralImg[y][x] = sum;
+			}
+		}
+		// sum vertically
+		for ( int y = 1; y < h; y++ )
+		{
+			for ( int x = 0; x < w; x++)
+			{
+				integralImg[y][x] += integralImg[y-1][x];
+			}
+		}
+		return integralImg;
+	}
+	
+    private long[][] getIntegralImg( byte[]img, int width, int height )
+    {
+        long sum;
+        long [][]integralImg = new long[height][width];
+        for ( int y = 0; y < height; y++)
+        {
+            int d = img[y * width];
+            if (d < 0) d+= 256;
+            sum = integralImg[y][0] = d; 
+            for ( int x = 1; x < width; x++)
+            {
+                d = img[y * width + x];
+                if (d < 0) d+= 256;
+                sum+= d;
+                integralImg[y][x] = sum;
+            }
+        }
+        // sum vertically
+        for ( int y = 1; y < height; y++ )
+        {
+            for ( int x = 0; x < width; x++)
+            {
+                integralImg[y][x] += integralImg[y-1][x];
+            }
+        }
+        return integralImg;
+    }
+
+    private byte [][] getBinaryImg(byte []img, int startX, int startY, 
+			int width, int height, int maskThreshold )
+	{
+		long []histo = new long[256];
+		int [][] subImg = new int[height][width];
+		for ( int y = 0, r = startY; y < height; y++, r++ )
+		{
+			for ( int x = 0, c = startX ; x < width; x++, c ++)
+			{
+				int data = img[r*xDim + c];
+	            if (data < 0) data+= 256;
+				subImg[y][x] = data;
+				if ( data > 255 || data < 0)
+				{
+				    data = 255;
+				}
+				histo[data]++;
+			}
+		}
+		// look for median value
+		long medianPixel = width * height /2;
+		long numPixel = 0;
+		int median;
+		for ( median = 0; median < 256; median++ )
+		{
+			numPixel += histo[median];
+			if (numPixel > medianPixel)
+				break;
+		}
+		byte [][]binImg = new byte[height][width];
+		for ( int y = 0; y < height; y++ )
+		{
+			for ( int x = 0; x < width; x++)
+			{
+				binImg[y][x] = (byte)( subImg[y][x]> median ?1:0);
+				if ( Math.abs(subImg[y][x] - median) > maskThreshold )
+				{
+				    binImg[y][x] |= 0x4;
+				}
+			}
+		}
+		return binImg;
+		
+	}
+	
+	private byte[][] getBinaryImg(long [][]lImg, int startX, int startY, 
+			int width, int height, int blockSize, int maskThreshold )
+	{
+		long []histo = new long[256];
+		int [][] subImg = new int[height][width];
+		long area = blockSize * blockSize;
+		for ( int y = 0, r = startY; y < height; y++, r += blockSize )
+		{
+			for ( int x = 0, c = startX ; x < width; x++, c += blockSize)
+			{
+				try
+				{
+				long A = lImg[r][c];
+				long B = lImg[r][c+blockSize-1];
+				long C = lImg[r+blockSize-1][c];
+				long D = lImg[r+blockSize-1][c+blockSize-1];
+				int data = (int)((A+D - B-C) /area);
+				if ( data > 255 )
+				    data = 255;
+				if ( data < 0)
+				    data = 0;
+				subImg[y][x] = data;
+				histo[data]++;
+				}
+				catch (Exception e )
+				{
+					System.out.println(e.toString());
+				}
+			}
+		}
+		// look for median value
+		long medianPixel = width * height /2;
+		long numPixel = 0;
+		int median;
+		for ( median = 0; median < 256; median++ )
+		{
+			numPixel += histo[median];
+			if (numPixel > medianPixel)
+				break;
+		}
+		byte [][]binImg = new byte[height][width];
+		for ( int y = 0; y < height; y++ )
+		{
+			for ( int x = 0; x < width; x++)
+			{
+				binImg[y][x]= ( byte )( ( subImg[y][x] > median ) ? 1:0 );
+				if ( Math.abs(subImg[y][x] - median) > maskThreshold )
+				{
+				    binImg[y][x] |= 0x04;
+				
+				}
+			}
+		}
+		return binImg;
+	}
+	
+    private byte [][] getBinaryImg(byte [][]img, int startX, int startY, 
+            int width, int height, int blockSize, int maskThreshold )
+    {
+        long []histo = new long[256];
+        int [][] subImg = new int[height][width];
+        long area = blockSize * blockSize;
+        for ( int y = 0, r = startY; y < height; y++, r += blockSize )
+        {
+            for ( int x = 0, c = startX ; x < width; x++, c += blockSize)
+            {
+                int sum = 0;
+                for (int  m = 0; m < blockSize; m++)
+                    for ( int n = 0; n < blockSize; n++)
+                    {
+                        int temp = img[r+m][c+n];
+                        if (temp < 0) temp+=256;
+                        sum+= temp;
+                    }
+                int data = (int)(sum/area);
+                subImg[y][x] = data;
+                histo[data]++;
+            }
+        }
+        // look for median value
+        long medianPixel = width * height /2;
+        long numPixel = 0;
+        int median;
+        for ( median = 0; median < 256; median++ )
+        {
+            numPixel += histo[median];
+            if (numPixel > medianPixel)
+                break;
+        }
+        byte [][]binImg = new byte[height][width];
+        for ( int y = 0; y < height; y++ )
+        {
+            for ( int x = 0; x < width; x++)
+            {
+                binImg[y][x]= ( byte )( ( subImg[y][x] > median ) ? 1:0 );
+                if ( Math.abs(subImg[y][x] - median) > maskThreshold )
+                {
+                    binImg[y][x] |= 0x04;
+                
+                }
+            }
+        }
+        return binImg;
+    }
+
+    private int[]getOffset( byte [][]refBinImg, byte[][]srcBinImg )
+	{
+		float minError = Float.MAX_VALUE;
+		int offsetX=0, offsetY=0;
+		float []errArray = new float[9];
+		int index = 0;
+		for (int m = -1; m < 2; m++)
+		{
+			for ( int n = -1; n < 2; n++)
+			{
+				int err = 0;
+				int totalPixel = 0;
+				for ( int y = 1; y < refBinImg.length-1; y++)
+				{
+					for ( int x = 1; x < refBinImg[0].length-1; x++)
+					{
+					    int tmp = refBinImg[y][x] + srcBinImg[y+m][x+n]; 
+						if (( tmp & 0x8 ) != 0 )
+						{
+						    totalPixel++;
+							if ( (tmp & 1) != 0)
+							{
+								err++;
+							}
+						}
+					}
+				}
+				if (totalPixel != 0)
+				{
+				    float errRatio = (float)err/(float)totalPixel;
+				    errArray[index++] = errRatio;
+    				if ( errRatio < minError )
+    				{
+    					minError = errRatio;
+    					offsetX = n;
+    					offsetY = m;
+    				}
+				}
+			}
+		}
+		//System.out.println( "e=" + minError);
+		int []offset = {offsetX, offsetY};
+		return offset;
+	}
+	
+    private float getMismatchPixelsRate(  byte[][]refBinImg, byte[][] srcBinImg, 
+            int offsetX, int offsetY, int border )
+    {
+        if (( Math.abs(offsetX) > border )|| ( Math.abs( offsetY ) > border ))
+        {
+            return 0;
+        }
+        int err = 0;
+        int totalPixel = 0;
+        for ( int y = border; y < refBinImg.length-border; y++)
+        {
+            for ( int x = border; x < refBinImg[0].length-border; x++)
+            {
+                int tmp = refBinImg[y][x] + srcBinImg[y+offsetY][x+offsetX]; 
+                if (( tmp & 0x8 ) != 0 )
+                {
+                    totalPixel++;
+                    if ( (tmp & 1) != 0)
+                    {
+                        err++;
+                    }
+                }
+            }
+        }        
+        if ( totalPixel == 0) 
+            return 1;
+        else
+            return ((float)err / (float)totalPixel);
+    }
+    
+    private float[]getOffsetWithInterpolation( byte [][]refBinImg, byte[][]srcBinImg )
+    {
+        float minError = Float.MAX_VALUE;
+        int border = 2;
+        int offsetX=0, offsetY=0;
+        int boxWidth = 2 * border + 1;
+        float []errArray = new float[boxWidth*boxWidth];
+        for ( int i = 0; i < errArray.length ; i++ )
+        {
+            errArray[i] = -1;
+        }
+        for ( int m = -1; m < 2; m++)
+        {
+            for ( int n = -1; n < 2; n++)
+            {
+                float errRate = getMismatchPixelsRate( refBinImg, srcBinImg, n, m, border );
+                errArray[boxWidth*(m+border) + n + border] = errRate;
+                if ( errRate < minError )
+                {
+                    minError = errRate;
+                    offsetX = n;
+                    offsetY = m;
+                }
+                
+            }
+        }
+        
+        for ( int m = offsetY -1; m < offsetY+2; m++ )
+        {
+            for ( int n = offsetX - 1; n < offsetX + 2; n++ )
+            {
+                if ( errArray[boxWidth*(m+border) + n + border] == -1)
+                {
+                    errArray[boxWidth*(m+border) + n + border] =
+                        getMismatchPixelsRate( refBinImg, srcBinImg, n, m, border );
+                }
+            }       
+        }
+        float xPos;
+        float zx0 =  1 -errArray[boxWidth*(offsetY + border) + offsetX + border-1];
+        float zx1 =  1- errArray[boxWidth*(offsetY + border) + offsetX + border];
+        float zx2 =  1- errArray[boxWidth*(offsetY + border) + offsetX + border+1];
+        if ( zx0 > zx1 )
+        {
+            xPos = offsetX - 1;
+        }
+        else if ( zx2 > zx1 )
+        {
+            xPos = offsetX + 1;
+        }
+        else
+        {
+            float norm =  2.0f * (zx2 + zx0 - 2 * zx1);
+            if ( norm != 0 )
+            {
+                xPos =  offsetX + (zx0 - zx2) / norm;
+            }
+            else
+            {
+                xPos = offsetX;
+            }
+        }
+        float zy0 = 1- errArray[boxWidth*(offsetY + border-1) + offsetX + border];
+        float zy1 = 1- errArray[boxWidth*(offsetY + border) + offsetX + border];
+        float zy2 = 1- errArray[boxWidth*(offsetY + border+1) + offsetX + border];
+        float yPos;
+        if ( zy0 > zy1 )
+        {
+            yPos = offsetY - 1;   
+        }
+        else if ( zy2 > zy1 )
+        {
+            yPos = offsetY + 1;
+        }
+        else 
+        {
+            float norm =  2.0f * (zy2 + zy0 - 2 * zy1);
+            if ( norm != 0 )
+            {
+                yPos =  offsetY + (zy0 - zy2) / norm;
+            }
+            else
+            {
+                yPos = offsetY;
+            }
+        }
+        //System.out.println( "e=" + minError);
+        float []offset = {xPos, yPos};
+        return offset;
+    }
+    
+
+    
+    public BufferedImage getDiffImage( AffineTransform affine )
+    {
+        long t1 =System.currentTimeMillis();
+        AffineTransformOp op = new AffineTransformOp( affine, AffineTransformOp.TYPE_BILINEAR );
+        DataBuffer buffer = new DataBufferByte( imgSrc, xDim * yDim );
+        BufferedImage srcBuffer = BufferedImageUtils.createBufferedImage( buffer, xDim, yDim, 8 );
+        BufferedImage dstBuffer = new BufferedImage( xDim, yDim, BufferedImage.TYPE_BYTE_GRAY );
+        op.filter( srcBuffer, dstBuffer );
+        DataBufferByte dataBufferDst = (DataBufferByte)dstBuffer.getRaster().getDataBuffer();
+        byte[] transformedImg = dataBufferDst.getData();
+        byte[] diffImg = new byte[ transformedImg.length];
+        for ( int i = 0; i < transformedImg.length ; i++ )
+        {
+            diffImg[i] = (byte)Math.abs( transformedImg[i] - imgRef[i] );
+        }
+        DataBuffer bufferDiff = new DataBufferByte( diffImg, xDim * yDim );
+        BufferedImage bufferDiffImg = BufferedImageUtils.createBufferedImage( bufferDiff, xDim, yDim, 8 );
+        long t2 =System.currentTimeMillis();
+        System.out.println("time = " + (t2-t1));
+        return bufferDiffImg;
+    }
+    
+    public BufferedImage getDiffImage2( AffineTransform affine )
+    {
+        long t1 =System.currentTimeMillis();
+        double []m = new double[6];
+        affine.getMatrix( m );
+        int h = yDim;
+        int w = xDim;
+        byte []diffImg = new byte[h*w];
+        int index = 0;
+        for ( int y = 0; y < h; y++ )
+        {
+            double x1 = m[2] * y + m[4];
+            double y1 = m[3] * y + m[5];
+            for ( int x = 0; x < w; x++ )
+            {
+                x1 += m[0];
+                y1 += m[1];
+                if ( x1 >= 0 && x1 < w -2 && y1 >= 0 && y1 < h -2 )
+                {
+                        
+                    int xLeft  = (int)( x1 );
+                    int xRight = xLeft + 1;
+                    int yTop   = (int) y1;
+                    int yBot   = ( yTop + 1 );
+                    int pos = yTop * xDim + xLeft;
+                    double s1 = imgSrc[pos];
+                    if ( s1 < 0 ) s1 += 256;
+                    double s2 = imgSrc[pos+1];
+                    if ( s2 < 0 ) s2 += 256;
+                    double s3 = imgSrc[pos + xDim];
+                    if ( s3 < 0 ) s3 += 256;
+                    double s4 = imgSrc[pos + xDim + 1];
+                    if ( s4 < 0 ) s4 += 256;
+                    double s5 = (x1-xLeft)*(s2-s1) + s1;
+                    double s6 = (x1-xLeft)*(s4-s3) + s1;
+                    double s =  (y1-yTop) *(s6-s5) + s5;
+                    double src = imgRef[ index ];
+                    if (src < 0 ) src += 256;
+                    diffImg[index] = (byte)Math.abs( src - s );
+                }
+                index++;
+            }
+        }
+        BufferedImage bufferDiffImg = BufferedImageUtils.createBufferedImage( diffImg, xDim, yDim );
+        long t2 =System.currentTimeMillis();
+        System.out.println("time = " + (t2-t1));
+        return bufferDiffImg;
+    }
+    
+    public byte[][] getDiffNearest( double [][]m )
+    {
+        long t1 =System.currentTimeMillis();
+        int h = yDim;
+        int w = xDim;
+        byte [][]diffImg = new byte[h][w];
+        for ( int y = 0; y < h; y++ )
+        {
+            double x1 = m[0][1] * y + m[0][2];
+            double y1 = m[1][1] * y + m[1][2];            
+            for ( int x = 0; x < w; x++ )
+            {
+                x1 += m[0][0];
+                y1 += m[1][0];
+                int xx = (int)x1;
+                int yy = (int)y1;
+                if ( xx >= 0 && xx < w-1 && yy >= 0 && yy < h-1 )
+                {
+                    diffImg[y][x] = (byte)Math.abs( imgRef[y * xDim + x] - imgSrc[yy * xDim + xx] );
+                }
+            }
+        }
+        long t2 =System.currentTimeMillis();
+        System.out.println("time = " + (t2-t1));
+        return diffImg;
+    }
+
+    public AffineTransform alignImages( byte[]imgSrc ) throws Exception
+    {
+        this.imgSrc = (byte[])imgSrc.clone();
+        try
+        {
+            integralSrc = getIntegralImg( imgSrc, xDim, yDim );
+        }
+        catch( Exception e )
+        {
+            System.out.println("cannot load the image, reason = " + e.toString() );
+            throw e;
+        }
+        return alignImages();
+    }
+    
+    public AffineTransform alignImages()
+    {
+        long t1 =System.currentTimeMillis();
+        if ( keyPointMap == null )
+        {
+            SURFKeyPointSearch surf = new SURFKeyPointSearch(integralRef, 2, 4, 6, 30.0f );
+            setKeyPointMap( surf.getKeyPointHistoMap( nSegmentX, nSegmentY ));            
+        }
+        int blockSize = 1 << layer;
+        int subImgWidth  = ( xDim / blockSize )-4;
+        int subImgHeight = ( yDim / blockSize )-4;
+        int regionWidth  = (( xDim - 4 * blockSize )/ keyPointMap[0].length );
+        int regionHeight = (( yDim - 4 * blockSize )/ keyPointMap.length );
+        int xCorner = ( xDim - subImgWidth * blockSize )/2;
+        int yCorner = ( yDim - subImgHeight * blockSize )/2;
+        int xOffset = 0;
+        int yOffset = 0;
+        int index, m;
+        int edge = 2 << 4;
+        // do coarse alignment without segmentation
+        for ( index = layer, m= 0; index >= 3; index--, m++)
+        {
+            byte [][]refBinImg;
+            byte [][]srcBinImg;
+            mThreshold = MASK_THRESHOLD[index];
+            refBinImg = getBinaryImg(integralRef, xCorner, yCorner, 
+                    subImgWidth, subImgHeight, blockSize, mThreshold );
+            srcBinImg = getBinaryImg(integralSrc, xCorner+xOffset, yCorner+yOffset, 
+                    subImgWidth, subImgHeight, blockSize,  mThreshold );
+            int[] offset = getOffset(refBinImg, srcBinImg);
+            xOffset+= blockSize * offset[0];
+            yOffset+= blockSize * offset[1];
+            System.out.println( "iteration #" + index + "xoffset = " + blockSize * offset[0] +
+                    ",yoffset = " + offset[1]* blockSize);
+            blockSize /= 2;
+            subImgWidth *= 2;
+            subImgHeight*= 2;
+        }
+
+        // now do the three regions with highest number of keypoints
+        float []xOffsets = new float[3];
+        float []yOffsets = new float[3];
+        int []xCorners = new int[3];
+        int []yCorners = new int[3];
+        for ( int n = 0; n < 3; n++ )
+        {
+            xOffsets[n] = xOffset;
+            yOffsets[n] = yOffset;
+            xCorners[n] = regionXIndexs[n] * regionWidth + xCorner;
+            yCorners[n] = regionYIndexs[n] * regionHeight + yCorner;
+        }
+        subImgWidth =  ( regionWidth - 2* edge ) /blockSize;
+        subImgHeight = ( regionHeight - 2* edge )/blockSize;
+        
+        for ( ; index >= 0; index--, m++)
+        {
+            for ( int n = 0; n < 3; n++)
+            {
+                byte [][]refBinImg;
+                byte [][]srcBinImg;
+                mThreshold = MASK_THRESHOLD[index];
+               
+                if ( index != 0 )
+                {
+                    refBinImg = getBinaryImg(integralRef, xCorners[n], yCorners[n], 
+                            subImgWidth, subImgHeight, blockSize, mThreshold );
+                    srcBinImg = getBinaryImg(integralSrc, 
+                            (int)(xCorners[n]+xOffsets[n]), (int)(yCorners[n]+yOffsets[n]), 
+                            subImgWidth, subImgHeight, blockSize,  mThreshold );
+                    int[] offset = getOffset(refBinImg, srcBinImg);
+                    xOffsets[n]+= blockSize * offset[0];
+                    yOffsets[n]+= blockSize * offset[1];
+                }                
+                else
+                {
+                    // get sub pixel resolution
+                    refBinImg = getBinaryImg(imgRef, xCorners[n], yCorners[n], 
+                            subImgWidth, subImgHeight,  mThreshold );
+                    srcBinImg = getBinaryImg(imgSrc, (int)(xCorners[n]+xOffsets[n]),
+                            (int)( yCorners[n]+yOffsets[n] ), 
+                            subImgWidth, subImgHeight,   mThreshold );
+                    float []offset = getOffsetWithInterpolation( refBinImg, srcBinImg ); 
+                    xOffsets[n]+= blockSize * offset[0];
+                    yOffsets[n]+= blockSize * offset[1];
+                } 
+            }
+            
+            for ( int n= 0; n < 3; n++)
+            {
+                System.out.println("offset = " + xOffsets[n] +","+yOffsets[n]);
+                System.out.println("corner = " + xCorners[n] +","+yCorners[n]);
+            }
+            
+            blockSize /= 2;
+            subImgWidth *= 2;
+            subImgHeight*= 2;            
+        }
+        long t2 =System.currentTimeMillis();
+        System.out.println("time = " + (t2-t1));
+
+        double [] xIn = new double[3];
+        double [] xOut = new double[3];
+        double [] yIn = new double[3];
+        double [] yOut = new double[3];
+        for ( int i = 0; i < 3; i++ )
+        {
+            xIn[i]  = xCorners[i] + regionWidth/2;
+            xOut[i] = xIn[i] + xOffsets[i];
+            yIn[i]  = yCorners[i] + regionHeight/2;
+            yOut[i] = yIn[i] + yOffsets[i];
+        }
+        return getAffineMatrix( xIn, yIn, xOut, yOut );
+        
+    }
+    
+    public AffineTransform getAffineMatrix( double[]xIn, double []yIn, double []xOut, double []yOut )
+    {
+        // now get the affine matrix, by solving 6 equations 6 unknowns
+        double dx12 = xIn[0] - xIn[1];
+        double dx13 = xIn[0] - xIn[2];
+        double dy12 = yIn[0] - yIn[1];
+        double dy13 = yIn[0] - yIn[2];
+        double dxx12 = xOut[0] - xOut[1];
+        double dxx13 = xOut[0] - xOut[2];
+        double dyy12 = yOut[0] - yOut[1];
+        double dyy13 = yOut[0] - yOut[2];
+        double det = ( dx13*dy12 - dx12*dy13 );
+        double a = 1, b = 0, c = 0;
+        double d = 0, e = 1, f = 0;
+        AffineTransform affine = null;
+        if ( det != 0 )
+        {
+            a = ( dxx13 * dy12 - dxx12 * dy13 )/ det;
+            b = ( dxx12 * dx13 - dxx13 * dx12) / det;
+            c = xOut[0] - a *  xIn[0] - b *  yIn[0];
+            d = ( dyy13 * dy12 - dyy12 * dy13 )/( dx13*dy12 - dx12*dy13);
+            e = ( dyy12 * dx13 - dyy13 * dx12) /det;
+            f = yOut[0] - d *  xIn[0] - e *  yIn[0];
+            affine = new AffineTransform( a, d, b, e, c, f );
+        }
+        else
+        {
+            if ( dy12 == dy13 )
+            {
+                // special case, when y1 = y2 = y3
+                double angle = Math.atan( dyy12/dxx12 );
+                a = Math.cos( angle );
+                b = Math.sin( angle );
+                c = xOut[0] - a * xIn[0] - b * yIn[0];
+                d = -Math.sin( angle );
+                e = a;
+                f = yOut[0] - d * xIn[0] - e * yIn[0];
+                affine = new AffineTransform( a, d, b, e, c, f );
+            }
+            else
+            {
+                // try other direction then invert the matrix
+                det = ( dxx13*dyy12 - dxx12*dyy13 );
+                if ( det != 0 )
+                {
+                    a = ( dx13 * dyy12 - dx12 * dyy13 )/ det;
+                    b = ( dx12 * dxx13 - dx13 * dxx12) / det;
+                    c = xIn[0] - a *  xOut[0] - b *  yOut[0] ;
+                    d = ( dy13 * dyy12 - dy12 * dyy13 )/ det;
+                    e = ( dy12 * dxx13 - dy13 * dxx12) /det;
+                    f = yIn[0] -  d *  xOut[0] - e *  yOut[0] ;
+                    affine = new AffineTransform( a, d, b, e, c, f );
+                    try
+                    {
+                        affine = affine.createInverse();
+                    }
+                    catch ( NoninvertibleTransformException err )
+                    {
+                        // rotation = 0, shear = 0
+                        float deltaX = 0;
+                        float deltaY = 0;
+                        for (int i = 0; i < 3; i++ )
+                        {
+                            deltaX += xOut[i] - xIn[i];
+                            deltaY += yOut[i] - yIn[i];
+                        }
+                        affine = new AffineTransform( 1, 0, 0, 1, deltaX/3, deltaY/3 );                                            
+                    }
+                }
+                else
+                {
+                    // rotation = 0, shear = 0
+                    float deltaX = 0;
+                    float deltaY = 0;
+                    for (int i = 0; i < 3; i++ )
+                    {
+                        deltaX += xOut[i] - xIn[i];
+                        deltaY += yOut[i] - yIn[i];
+                    }
+                    affine = new AffineTransform( 1, 0, deltaX/3, 0, 1, deltaY/3 );                    
+                }
+            }
+        }
+        return affine;        
+    }
+}

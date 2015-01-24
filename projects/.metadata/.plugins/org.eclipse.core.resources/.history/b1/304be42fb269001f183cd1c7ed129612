@@ -1,0 +1,5 @@
+package edu.stanford.ee368;
+
+public class HttpFileUploader {
+
+}

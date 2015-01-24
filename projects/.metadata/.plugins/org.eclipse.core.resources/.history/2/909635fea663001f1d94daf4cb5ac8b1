@@ -1,0 +1,382 @@
+package hdr;
+
+import java.awt.Color;
+
+import jjil.core.RgbImage;
+import jjil.core.RgbVal;
+
+
+public class HdrAlgorithm {
+	private RgbImage inIm[];
+	private RgbImage outIm;
+	private SfpImage hdrIm;
+	private double exposures[];
+	// Epsilon used for stability of the logarithm.
+	private static final double d = 0.00001f;
+	// Correction coefficient.
+	private static final double a = 0.30f;
+	
+	static final double RGB2XYZ[][] = {{0.5141364, 0.3238786,  0.16036376},
+										 {0.265068,  0.67023428, 0.06409157},
+										 {0.0241188, 0.1228178,  0.84442666}};
+	static final double XYZ2RGB[][] = {{ 2.5651,   -1.1665,   -0.3986},
+										 {-1.0217,    1.9777,    0.0439},
+										 { 0.0753,   -0.2543,    1.1892}};
+	public HdrAlgorithm(RgbImage[] images, double exp[]) {
+		this.inIm = images;
+		if (images == null) {
+			throw new Error();
+		}
+		this.hdrIm = new SfpImage(images[0].getWidth(), images[0].getHeight(), 0);
+		this.exposures = exp;
+	}
+	public boolean ready() {
+		/* checks if input data is correct, we need at least 2 images */
+		if (inIm != null) {
+			if (inIm.length > 1) {
+				return true;
+			}
+		}
+		return false;
+	}
+	
+	public SfpImage Merge() {
+		if (!ready()) {
+			throw new Error("Not enough data to merge the pictures.");
+		}		
+		float[] hdrInternal = hdrIm.getData();
+		int rgbData[][] = new int[inIm.length][];
+		int totalLength = hdrIm.getHeight()*hdrIm.getWidth(); 
+		for (int i=0; i<inIm.length; i++) {
+			rgbData[i] = inIm[i].getData();
+		}
+		int nColor = 3;
+		boolean properlyExposed[][] = new boolean[nColor][totalLength];
+		boolean overExposed[][] = new boolean[nColor][totalLength];
+		boolean underExposed[][] = new boolean[nColor][totalLength];
+		int properlyExposedCount[][] = new int[nColor][totalLength];
+		int c[] = new int[nColor];
+		for (int p=0; p<totalLength; p++) {
+			// over each input image
+			for (int i=0; i<inIm.length; i++) {
+				// Normalize the values bt [0 255]
+				// Retrieve 3 color channels
+				
+				c[0] = RgbVal.getR(rgbData[i][p])-Byte.MIN_VALUE;
+				c[1] = RgbVal.getG(rgbData[i][p])-Byte.MIN_VALUE;
+				c[2] = RgbVal.getB(rgbData[i][p])-Byte.MIN_VALUE;
+				
+				for (int j=0; j<c.length; j++) {
+					
+					if(IsOverExposed(c[j])) {
+						overExposed[j][p] |= true;
+				
+					} else if(IsUnderExposed(c[j])) {
+						underExposed[j][p] |= true;
+						
+					} else {
+						properlyExposed[j][p] |= true;
+						properlyExposedCount[j][p] += 1;
+						hdrInternal[3*p+j] += c[j]/exposures[i];
+						
+					}
+				}
+			}
+		}
+		float minProperlyExposed = Float.POSITIVE_INFINITY;
+		for (int j=0;j<nColor;j++) {
+			for (int p=0; p<totalLength; p++) {
+				if(properlyExposed[j][p] && hdrInternal[3*p+j]<minProperlyExposed) {
+					minProperlyExposed = hdrInternal[3*p+j];
+				}
+			}
+		}
+		float maxProperlyExposed = Float.NEGATIVE_INFINITY;
+		for (int j=0;j<nColor;j++) {
+			for (int p=0; p<totalLength; p++) {
+				if(properlyExposed[j][p] && hdrInternal[3*p+j]>maxProperlyExposed) {
+					maxProperlyExposed = hdrInternal[3*p+j];
+				}
+			}
+		}
+		System.out.println("maxProperlyExposed"+maxProperlyExposed+"minProperlyExposed"+minProperlyExposed);
+		for (int j=0;j<nColor;j++) {
+			for (int p=0; p<totalLength; p++) {
+
+				hdrInternal[3*p+j] /= (float)(Math.max(1, properlyExposedCount[j][p]));
+				//System.out.println(hdrInternal[3*p+j]);
+				if (!properlyExposed[j][p]) {
+					if (underExposed[j][p] && !overExposed[j][p]) {
+						hdrInternal[3*p+j] = minProperlyExposed;
+					} else if (overExposed[j][p] && !underExposed[j][p]) {
+						hdrInternal[3*p+j] = maxProperlyExposed;
+					} else if (overExposed[j][p] && underExposed[j][p]) {
+						//TODO(assign neighbor value)
+						System.out.println("over and under");
+						hdrInternal[3*p+j] = 1000;
+					} else {
+						throw new Error("not properly exposed and neither under or overexposed pixel");
+					}
+				}
+			}
+		}
+		//Normalize(hdrInternal);
+		return hdrIm;
+	}
+	
+	static private boolean IsOverExposed(int v) {
+		// TODO(johmathe): define as class member.
+		int tMax = 240;
+		if(v > tMax) {
+			return true;
+		}
+		return false;
+	}
+	static private boolean IsUnderExposed(int v) {
+		int tMin = 35;
+		if(v < tMin) {
+			return true;
+		}
+		return false;
+	}
+
+	public RgbImage Tonemap() {
+		float[] hdrInternal = hdrIm.getData();
+		if (hdrInternal == null) {
+			throw new Error("HDR image not initialized");
+		}
+		hdrIm = RGBtoYxy(hdrIm);
+		System.out.print("min: "+Min(hdrInternal)+" max: "+Max(hdrInternal));
+		hdrIm = ComputeNewLuminanceMap(hdrIm);
+		outIm = YxytoRGB(hdrIm);
+		return outIm;
+	}
+	
+	static private float Max(float in[]) {
+		float max = Float.NEGATIVE_INFINITY;
+		if (in == null) {
+			throw new Error();
+		}
+		for (int i=0; i<in.length; i++) {
+			if (in[i] > max) {
+				max = in[i];	
+			}
+		}
+		return max;
+	}
+	static private int Max(int in[]) {
+		int max = Integer.MIN_VALUE;
+		if (in == null) {
+			throw new Error();
+		}
+		for (int i=0; i<in.length; i++) {
+			if (in[i] > max) {
+				max = in[i];	
+			}
+		}
+		return max;
+	}
+	static private float Min(float in[]) {
+		float min = Float.POSITIVE_INFINITY;
+		if (in == null) {
+			throw new Error();
+		}
+		for (int i=0; i<in.length; i++) {
+			if (in[i] < min) {
+				min = in[i];	
+			}
+		}
+		return min;
+	}
+	static private int Min(int in[]) {
+		int min = Integer.MAX_VALUE;
+		if (in == null) {
+			throw new Error();
+		}
+		for (int i=0; i<in.length; i++) {
+			if (in[i] < min) {
+				min = in[i];	
+			}
+		}
+		return min;
+	}
+	static private byte Max(byte in[]) {
+		byte max = Byte.MIN_VALUE;
+		if (in == null) {
+			throw new Error();
+		}
+		for (int i=0; i<in.length; i++) {
+			if (in[i] > max) {
+				max = in[i];	
+			}
+		}
+		return max;
+	}
+	static private byte Min(byte in[]) {
+		byte min = Byte.MAX_VALUE;
+		if (in == null) {
+			throw new Error();
+		}
+		for (int i=0; i<in.length; i++) {
+			if (in[i] < min) {
+				min = in[i];	
+			}
+		}
+		return min;
+	}
+
+	
+	public static SfpImage RGBtoHSL(SfpImage in) {
+		int size = in.getHeight()*in.getWidth();
+		SfpImage out = new SfpImage(in.getWidth(), in.getHeight());
+		System.out.println(in.getHeight());
+		System.out.println(size);
+		float outData[] = out.getData();
+		float inData[] = in.getData();
+		float[] hsbvals = new float[3];
+		for (int i=0; i<size; i++) {
+			Color.RGBtoHSB((int)(inData[3*i]), (int)inData[3*i+1], (int)inData[3*i+2], hsbvals);
+			// copy the results in the buffer
+			for (int j=0;j<3;j++) {
+				outData[3*i+j] = hsbvals[j];
+			}
+		}
+		return out;
+	}
+	
+	public static SfpImage RGBtoYxy(SfpImage in) {
+		  double result[] = new double[3];
+		  double W;
+		  int totalLength = in.getHeight()*in.getWidth();
+		  SfpImage out = new SfpImage(in.getWidth(), in.getHeight());
+		  float outData[] = out.getData();
+		  float inData[] = in.getData(); 
+		  for (int p=0; p<totalLength; p++) {
+			  result[0] = result[1] = result[2] = 0.;
+			  for (int i = 0; i < 3; i++) {
+					for (int j = 0; j < 3; j++) {
+						result[i] += RGB2XYZ[i][j] * inData[3*p+j];
+					}
+			  }
+			  W = result[0] + result[1] + result[2];
+			  if (W > 0) {
+				  outData[3*p+0] = (float)(result[1]);         /* Y */
+				  outData[3*p+1] = (float)(result[0] / W);     /* x */
+				  outData[3*p+2] = (float)(result[1] / W);     /* y */
+		      } else {
+		    	  outData[3*p+0] = 0;
+		    	  outData[3*p+1] = 0;
+		    	  outData[3*p+2] = 0;
+		      }
+		  }			
+		  return out;
+	}
+	public static RgbImage YxytoRGB(SfpImage in) {
+		  double result[] = new double[3];
+		  byte c[] = new byte[3];
+		  double X, Y, Z;
+		  int totalLength = in.getHeight()*in.getWidth();
+		  RgbImage out = new RgbImage(in.getWidth(), in.getHeight());
+		  int outData[] = out.getData();
+		  float inData[] = in.getData(); 
+		  for (int p=0; p<totalLength; p++) {
+			  Y         = inData[3*p+0];        /* Y */
+		      result[1] = inData[3*p+1];        /* x */
+		      result[2] = inData[3*p+2];        /* y */
+		      
+		      if ((Y > 0.) && (result[1] > 0.) && (result[2] > 0.)) {
+		    	  X = (result[1] * Y) / result[2];
+		    	  Z = (X/result[1]) - X - Y;
+		      } else {
+		    	  X = 0;
+		    	  Z = 0.;
+		      }
+		      for (int i=0;i<3;i++) {
+		    	 // We expect normalized values in the input image
+		    	 c[i] = (byte)((XYZ2RGB[i][0]*X+XYZ2RGB[i][1]*Y+XYZ2RGB[i][2]*Z)*(255)+Byte.MIN_VALUE);
+		    	 //System.out.println(c[i]);
+		      }
+		      outData[p] = RgbVal.toRgb(c[0], c[1], c[2]);
+		  }			
+		  return out; 
+	}
+	public static double ComputeLogLuminance(SfpImage in) {
+		// TODO(johmathe): assert image is type YSB
+		// We don't use the java coding standards to get as close as possible to the paper reinhard2002
+		double sumLog = 0;
+		float inData[] = in.getData();
+		int imSize = in.getHeight()*in.getWidth();
+		System.out.println("d:" + d);
+		for (int i=0; i<imSize; i++) {
+			// Luminance is third component in YSB
+			// TODO(johmathe): implement functions like getLuminance?
+			sumLog += Math.log(inData[3*i]+d);
+		}
+		double Lw = Math.exp(sumLog/imSize);
+		return Lw;
+	}
+	
+	public static SfpImage ComputeNewLuminanceMap(SfpImage in) {
+		// ToneMapping per se.
+		double Lw = ComputeLogLuminance(in);
+		System.out.println("Log luminance: "+Lw);
+		SfpImage out = new SfpImage(in.getWidth(), in.getHeight());
+		float inData[] = in.getData();
+		float outData[] = out.getData();
+		int imSize = in.getHeight()*in.getWidth();
+		double tmpL;
+		double l=0;
+		for (int p=0; p<imSize; p++) {
+			tmpL = (a/Lw)*inData[3*p];
+			l = tmpL/(1+tmpL);
+			//System.out.println(l);
+			//l = Math.log(inData[3*i+2]+d);	
+			outData[3*p] = (float)(l);
+			outData[3*p+1] = inData[3*p+1];
+			outData[3*p+2] = inData[3*p+2];
+		}
+		//Normalize(outData);
+		return out;
+	}
+	public static void Normalize(float v[]) {
+		float min[] = new float[3];
+		float max[] = new float[3];
+		float delta[] = new float[3];
+		// init min/max
+		for (int i=0; i<min.length; i++) {
+			min[i] = Float.MIN_VALUE;
+		}
+		for (int i=0; i<max.length; i++) {
+			max[i] = Float.MAX_VALUE;
+		}
+		// Retrieve info on a per channel basis
+		for (int p=0; p<v.length/3; p++) {
+			for (int i=0; i<max.length; i++) {
+				if(v[3*p+i] > max[i]) {
+					max[i] = v[3*p+i]; 
+				}
+			}
+			for (int i=0; i<min.length/3; i++) {
+				if(v[3*p+i] > min[i]) {
+					min[i] = v[3*p+i]; 
+				}
+			}
+		}
+		// Compute the deltas
+		for (int i=0; i<delta.length;i++) {
+			delta[i] = max[i]-min[i];
+		}
+		for(int p=0; p<v.length/3; p++) {
+			for (int i=0; i<delta.length;i++) {
+				v[i] = (v[p*3+i] - min[i])/delta[i];
+			}
+		}
+	}
+	public static int ConvertToRGBGray(double v) {
+		return RgbVal.toRgb((byte)(255*v-128), (byte)(255*v-128), (byte)(255*v-128));
+	}
+	public static int ConvertToRGB(double h, double s, double v) {
+		return Color.HSBtoRGB((float)(h), (float)(s), (float)(v));
+	}	
+	
+}

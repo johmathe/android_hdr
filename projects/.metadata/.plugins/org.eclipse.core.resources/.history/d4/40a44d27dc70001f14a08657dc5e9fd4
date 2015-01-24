@@ -1,0 +1,105 @@
+package hdr;
+import jjil.core.*;
+import jjil.core.Error;
+
+
+public class SfpImage extends Image {
+
+    /** A pointer to the image data
+     */
+    private final float[] wImage;
+    
+    /** Creates a new instance of SfpImage
+     *
+     * @param cWidth   the image width
+     * @param cHeight  the image height 
+     */
+
+	public SfpImage(int cWidth, int cHeight) {
+		super(cWidth, cHeight);
+		this.wImage = new float[getWidth()*getHeight()*3];
+	}
+	
+    public SfpImage(int cWidth, int cHeight, float[] rnData) {
+        super(cWidth, cHeight);
+        this.wImage = rnData;
+    }
+    
+    /**
+     * Creates a new instance of SfpImage, assigning a constant value
+     * @param nRgb the packed RGB value to assign
+     * @param cWidth the image width
+     * @param cHeight the image height
+     */
+    public SfpImage(int cWidth, int cHeight, float nRgb) {
+        super(cWidth, cHeight);
+        this.wImage = new float[getWidth()*getHeight()*3];
+        for (int i=0; i<this.getWidth()*this.getHeight()*3;i++) {
+            this.wImage[i] = nRgb;
+        }
+    }
+        
+    /** Creates a shallow copy of this image
+     *
+     * @return the image copy.
+     */
+    public Image clone()
+    {
+    	SfpImage image = new SfpImage(getWidth(), getHeight());
+        System.arraycopy(
+                this.getData(), 
+                0, 
+                image.getData(), 
+                0, 
+                getWidth()*getHeight()*3);
+        return image;
+    }
+    
+    /**
+     * Fill a rectangle in an SfpImage with a given value
+     * @param r the Rect to fill
+     * @param nRgb the color to assign
+     * @return the modified SfpImage (i.e., this)
+     * @throws Error if the bounds are outside the image
+     */
+    public SfpImage fill(Rect r, float nRgb) throws Error
+    {
+        if (r.getTop() < 0 || r.getBottom() > this.getHeight() ||
+                r.getLeft() < 0 || r.getRight() > this.getWidth()) {
+            throw new Error(Error.PACKAGE.CORE, 
+                    ErrorCodes.BOUNDS_OUTSIDE_IMAGE,
+                    r.toString(),
+                    null,
+                    null);
+        }
+        for (int i=r.getTop(); i<r.getBottom(); i++) {
+            for (int j=r.getLeft(); j<r.getRight(); j++) {
+            	// Fill 3 channels
+                this.wImage[i*this.getWidth()+j] = nRgb;
+                this.wImage[i*this.getWidth()+j+1] = nRgb;
+                this.wImage[i*this.getWidth()+j+2] = nRgb;
+            }
+        }
+        return this;
+    }
+    
+    /** Get a pointer to the image data.
+     *
+     * @return the data pointer.
+     */
+    public float[] getData()
+    {
+        return this.wImage;
+    }
+    
+    
+    /** Return a string describing the image.
+     *
+     * @return the string.
+     */
+    public String toString()
+    {
+        return super.toString() + " (" + getWidth() + "x" + getHeight() + ")";
+    }
+
+}

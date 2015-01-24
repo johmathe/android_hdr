@@ -1,0 +1,153 @@
+package edu.stanford.ee368.hdrserver;
+
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+
+import javax.imageio.ImageIO;
+
+import jjil.core.Error;
+import jjil.core.RgbImage;
+import jjil.j2se.RgbImageJ2se;
+import edu.stanford.ee368.hdrserver.AlignNImages;
+
+/**
+ * 
+ * @author Johan Mathe
+ * Wrapper class for the HDR algorithm, takes care of input/outputs, exposure settings etc.
+ */
+public class HDRMerge {
+	private static final long serialVersionUID = 8444623080884745517L;
+	BufferedImage img;
+	RgbImage finalResult;
+	RgbImage images[];
+	
+    /**
+     * Default constructor, takes paths and a list of exposure images
+     * @param image_paths
+     * @param exposures
+     */
+	HDRMerge(String[] image_paths, double exposures[])  {
+	    finalResult = null;
+
+		RgbImage[] images = null;
+		try {
+			for (int i=0; i<image_paths.length; i++) {
+				System.out.println("Image path: " + image_paths[i]);
+			}
+			AlignNImages aligner = new AlignNImages(image_paths);
+			images = aligner.alignImages();
+		} catch (Exception e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} catch (Error e) {
+			e.printStackTrace();
+		}
+
+		finalResult = null;
+		HdrAlgorithm algo = new HdrAlgorithm(images, exposures);
+		// Part 1: merging LDR images to HDR
+		System.out.println("Merging images...");
+		long t1 =System.currentTimeMillis();
+		algo.Merge();
+		long t2 =System.currentTimeMillis();
+		long dt =  t2 - t1;
+		System.out.println("Merging time: " + dt);
+
+		// Part 2: Tonemapping images
+		System.out.println("Tonemapping images...");
+		t1 =System.currentTimeMillis();
+		finalResult = algo.Tonemap();
+		t2 =System.currentTimeMillis();
+		dt =  t2 - t1;
+		System.out.println("Tone mapping time: " + dt);
+		System.out.println("Finished...");
+	}
+	
+	/**
+	 * Constructor from an array of jpeg images
+	 * @param imageBytes
+	 * @param exposures
+	 */
+	HDRMerge(byte[][] imageBytes, double exposures[]) {
+		finalResult = null;
+		RgbImage images[] = new RgbImage[imageBytes.length];
+		for (int i=0; i<images.length; i++) {
+			System.out.println("Loading image...");
+			images[i] = loadImage(imageBytes[i]);
+		}
+		HdrAlgorithm algo = new HdrAlgorithm(images, exposures);
+		// Part 1: merging LDR images to HDR
+		System.out.println("Merging images...");
+		algo.Merge();
+		
+		// Part 2: Tonemapping images
+		System.out.println("Tonemapping images...");
+		finalResult = algo.Tonemap();
+		
+		System.out.println("Finished...");
+	}
+	/**
+	 * Loads an image to an jjil RgbImage
+	 * @param path
+	 * @return
+	 */
+	private RgbImage loadImage(String path) {
+		try {
+			img = ImageIO.read(new File(path));
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+	    return RgbImageJ2se.toRgbImage(img);
+	}
+	/**
+	 * Loads an convert a byte image to a RgbImage
+	 * @param image
+	 * @return
+	 */
+	private RgbImage loadImage(byte image[]) {
+		InputStream in = new ByteArrayInputStream(image);
+		BufferedImage bImage = null;
+		try {
+			bImage = ImageIO.read(in);
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+		return RgbImageJ2se.toRgbImage(bImage);
+	}
+	/**
+	 * Normalize exposures making the first one = 1
+	 * @param exposures
+	 * @return
+	 */
+	static double [] NormalizeExposure(double exposures[]) {
+		double newExposures[] = new double[exposures.length];
+		for (int i=0; i<exposures.length; i++) {
+			newExposures[i] = exposures[i]/exposures[0];
+		}
+		return newExposures;
+	}
+	/**
+	 * Main method for testing purposes
+	 * @param args
+	 */
+	public static void main(String[] args) {
+		double exposures[] = {1300,1000,400, 320};
+	    exposures = NormalizeExposure(exposures);
+		String paths[] = new String[exposures.length];
+		for (int i=0; i<exposures.length; i++) {
+			paths[i] = String.format("/Users/johmathe/ee368/project/samples/exposures/img%02d.jpg", i+1); 
+		}
+		new HDRMerge(paths,exposures);
+	}
+	/**
+	 * Saves the final image result to a file
+	 * @param path
+	 */
+	public void toFile(String path) {
+	      RgbImageJ2se j2sea = new RgbImageJ2se();
+	      j2sea.toFile(finalResult, path);
+	}
+}

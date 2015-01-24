@@ -1,0 +1,97 @@
+/*
+ * HDRMerge.java
+ *
+ * Created on May 12, 2010, 2:54 PM
+ *
+ * Copyright 2010 Johan Mathe
+ *     This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the GNU General Public License as published by
+ *    the Free Software Foundation, either version 3 of the License, or
+ *    (at your option) any later version.
+ *
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    GNU General Public License for more details.
+ *
+ *    You should have received a copy of the GNU General Public License
+ *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ */
+
+import java.awt.*;
+import java.awt.event.*;
+import jjil.debug.Debug;
+import jjil.j2se.*;
+import jjil.algorithm.*;
+import jjil.core.*;
+
+public class HDRMerge extends Frame {
+	/**
+	 * 
+	 */
+	private static final long serialVersionUID = 8444623080884745517L;
+	java.awt.Image img;
+	jjil.core.RgbImage jjim;
+	HDRMerge(String[] image_paths) {
+		super("Image Frame");
+		for (int i=0; i<image_paths.length; i++) {
+			System.out.println("Loading image "+image_paths[i]+"...");
+			loadImage(image_paths[i]);
+		}
+	}
+	
+	private void loadImage(String path) {
+	    MediaTracker mt = new MediaTracker(this);
+        RgbImageJ2se debug = new RgbImageJ2se(this.getGraphics());
+        img = getToolkit().getImage(path);
+
+	    addWindowListener(new WindowAdapter(){
+	      public void windowClosing(WindowEvent we){
+	        dispose();
+	      }
+    	});
+    	try {
+        jjil.core.RgbImage inimg = RgbImageJ2se.toRgbImage(img);
+        Sequence seq = new Sequence();
+        System.out.println("processing image...");
+        //seq.add(new Rgb3x3Average());
+        seq.add(new RgbAvgGray());
+        seq.add(new Gray8CannyVert(50));
+        seq.add(new Gray8Threshold(8, false));
+        seq.add(new Gray8Rgb());
+        
+        seq.push(inimg.clone());
+        if (seq.isEmpty()) {
+        	/* error -- no output from Canny */
+    	}
+    	
+        System.out.println("getting image...");
+        jjim = (RgbImage)seq.getFront();
+        
+        System.out.println("displaying image...");
+		
+    	} catch (jjil.core.Error e) {
+    	System.out.println("exception thrown...");
+	
+    	}; 
+	    setSize(850, 650);
+	    setVisible(true);
+	}
+	public void update(Graphics g){
+	    paint(g);
+	}
+	  
+	public void paint(Graphics g){
+	    if(img != null) {
+	      RgbImageJ2se j2sea = new RgbImageJ2se(g);
+	      j2sea.toDisplay(jjim);
+	    }
+	    else
+	      g.clearRect(0, 0, getSize().width, getSize().height);
+	 }
+	
+	public static void main(String[] args) {
+		new HDRMerge(args);
+	}
+}

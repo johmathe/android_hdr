@@ -1,0 +1,5 @@
+#Sun May 30 13:41:46 PDT 2010
+eclipse.preferences.version=1
+jarsExcludedFromWebInfLib=/Users/johmathe/ee368/project/libs/commons-fileupload-1.2.1/lib/commons-fileupload-1.2.1.jar
+warSrcDir=war
+warSrcDirIsOutput=true

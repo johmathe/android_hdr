@@ -1,0 +1,114 @@
+package hdr;
+
+/**
+ * Response layer for SURF (Speeded Up Robust Features ) keypoint detection. 
+ * Translating the C code written by C.Evans http://www.chrisevandev.com
+ * @author Tim Wong
+ *
+ */
+public class ResponseLayer 
+{
+
+	float [][]response = null;
+	boolean [][] laplacian = null;
+	private int width;
+	private int height;
+	private int steps;
+	private int filterSize;
+	
+	ResponseLayer(  int width, int height, 
+			int steps, int filterSize )
+	{
+		this.height = height;
+		this.width = width;
+		this.steps = steps;
+		this.filterSize = filterSize;
+	}
+	
+	public float getResponse(int row, int col) 
+	{
+		return response[row][col];
+	}
+
+	public boolean getLaplacian(int row, int col) 
+	{
+		return laplacian[row][col];
+	}
+
+	public void createResponse( long [][]integralImg )
+	{
+		float Dxx;
+		float Dxy;
+		float Dyy;
+		int b = (filterSize - 1) / 2 + 1;         // border for this filter
+	    int l = filterSize / 3;                   // lobe for this filter (filter size / 3)
+	    int w = filterSize;                       // filter size
+	    int l2 =2 *l - 1;
+	    float inverse_area = 1.f/(w*w);           // normalisation factor
+        float inverse_area2 =  inverse_area *  inverse_area;           // normalisation factor
+	    response = new float[height][width];
+	    laplacian = new boolean[height][width];
+	    for ( int i = 0; i < height; i++ )
+		{
+			int r = i * steps;
+			for ( int j = 0; j < width; j++ )
+			{
+				int c = j * steps;
+			    Dxx = boxIntegral(integralImg, r - l + 1, c - b, l2, w)
+			    	- boxIntegral(integralImg, r - l + 1, c - l / 2, l2, l)*3;
+			    Dyy = boxIntegral(integralImg, r - b, c - l + 1, w, l2 )
+		        	- boxIntegral(integralImg, r - l / 2, c - l + 1, l, l2 )*3;
+			    Dxy = boxIntegral(integralImg, r - l, c + 1, l, l)
+		            + boxIntegral(integralImg, r + 1, c - l, l, l)
+		            - boxIntegral(integralImg, r - l, c - l, l, l)
+		            - boxIntegral(integralImg, r + 1, c + 1, l, l);
+			    // Normalise the filter responses with respect to their size
+			    // Get the determinant of hessian response & laplacian sign
+			    response[i][j]  = (Dxx * Dyy - 0.81f * Dxy * Dxy)* inverse_area2;
+			    laplacian[i][j] = Dxx + Dyy >= 0 ? true : false;
+			}
+		}
+	}
+		
+	private int boxIntegral(long [][]integralImg, int rStart, int cStart, int nR, int nC )
+    {
+        int c1 = Math.min(integralImg[0].length-1,  cStart);
+        int c2 = Math.min(integralImg[0].length-1,  cStart+nC);
+        int r1 = Math.min(integralImg.length-1, rStart);
+        int r2 = Math.min(integralImg.length-1, rStart+nR);
+        long A = 0;
+        long B = 0;
+        long C = 0;
+        long D = 0;
+		if (r1 >= 0 && c1 >= 0) 
+			A = integralImg[r1][c1];
+		if (r1 >= 0 && c2 >= 0) 
+			B = integralImg[r1][c2];
+		if (r2 >= 0 && c1 >= 0) 
+			C = integralImg[r2][c1];
+		if (r2 >= 0 && c2 >= 0) 
+			D = integralImg[r2][c2];
+		return (int)Math.max(0, A-B-C+D);
+	}
+  
+	public int getWidth() 
+	{
+		return width;
+	}
+
+	public int getHeight() 
+	{
+		return height;
+	}
+
+	public int getSteps() 
+	{
+		return steps;
+	}
+
+	public int getFilterSize() 
+	{
+		return filterSize;
+	}
+	
+}
